@@ -1,3 +1,15 @@
+foosScoreMultiCore2.py
+
+#Real WiFi/iRefFoos credentials go in these once configured - see README.md#secrets.
+secrets.py
+secretsIref.py
+
+#Per-device runtime state written by the ASSIGN UDP command, not source.
+table.txt
+
+#Local-machine Claude Code settings, not shared project config.
+.claude/settings.local.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
