@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.05 08/15/2026
+#v3.06 08/15/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -30,7 +30,6 @@ import select
 import machine
 import _thread
 from machine import Pin
-from machine import Timer
 from machine import I2C
 from machine import SPI
 from machine import WDT
@@ -336,20 +335,14 @@ def sendIdent(kind,pin):
                 except OSError:
                         pass
 
-#Each sensor/pushbutton pin gets its own block flag and Timer (closures below, bound to idx) so
-#one pin's debounce window never masks another pin's IRQ - including PB3, the menu Action button.
-def makeSensorTimerDone(idx):
-    def done(timer):
-        sensorBlocked[idx] = False
-        leds[idx].value(0)
-    return done
-
-def makePushbuttonTimerDone(idx):
-    def done(timer):
-        pushbuttonBlocked[idx] = False
-        timeOutLED.value(0)
-    return done
-
+#Each sensor/pushbutton pin gets its own block flag and debounce deadline so one pin's
+#debounce window never masks another pin's IRQ - including PB3, the menu Action button.
+#Deadlines are plain ticks_ms() ints set from the ISR (allocation-free) and polled from the
+#main loop via serviceDebounce() - a machine.Timer armed with .init() from inside a pin IRQ
+#allocates internally, which MicroPython's rp2 port raises OSError 12 (ENOMEM) for: hard-IRQ
+#context can't safely allocate since the interrupt may have landed mid-GC. That exception
+#used to abort pushbuttonInterrupt partway through, before pushbuttonStates[idx]/
+#pushbuttonBlocked[idx] were reset - leaving that pin stuck ignoring presses.
 def sensorInterrupt(pin):
     global sensorStates
     idx = sensors.index(pin)
@@ -361,7 +354,7 @@ def sensorInterrupt(pin):
             leds[idx].value(1)
             pushEvent(EVENT_GOAL,teams[idx],pins[idx])
     elif (sensor.value() == offState) and (sensorStates[idx] == 1):
-        sensorTimers[idx].init(period = delaySensor,mode = Timer.ONE_SHOT,callback = sensorTimerCallbacks[idx])
+        sensorUnblockAt[idx] = time.ticks_add(time.ticks_ms(),delaySensor)
         sensorStates[idx] = 0
 
 def pushbuttonInterrupt(pin):
@@ -386,8 +379,26 @@ def pushbuttonInterrupt(pin):
             else:
                 pushEvent(EVENT_TIMEOUT,pushbuttonTeams[idx],pushbuttonPins[idx])
     elif (pushbutton.value() == offPBState) and (pushbuttonStates[idx] == 1):
-        pushbuttonTimers[idx].init(period = timeDelay,mode = Timer.ONE_SHOT,callback = pushbuttonTimerCallbacks[idx])
+        pushbuttonUnblockAt[idx] = time.ticks_add(time.ticks_ms(),timeDelay)
         pushbuttonStates[idx] = 0
+
+def serviceDebounce():
+    #Called once per main-loop iteration (never from IRQ context) to clear a pin's block flag
+    #once its debounce window has passed - the allocation-safe replacement for what the
+    #Timer.ONE_SHOT callbacks used to do.
+    now = time.ticks_ms()
+    for idx in range(len(sensorUnblockAt)):
+        deadline = sensorUnblockAt[idx]
+        if deadline is not None and time.ticks_diff(now,deadline) >= 0:
+            sensorBlocked[idx] = False
+            leds[idx].value(0)
+            sensorUnblockAt[idx] = None
+    for idx in range(len(pushbuttonUnblockAt)):
+        deadline = pushbuttonUnblockAt[idx]
+        if deadline is not None and time.ticks_diff(now,deadline) >= 0:
+            pushbuttonBlocked[idx] = False
+            timeOutLED.value(0)
+            pushbuttonUnblockAt[idx] = None
 
 def clearLEDStrip():
     led_strip.send_command(command="clear",ranges=allLEDs,duration=0,color=off)
@@ -997,9 +1008,8 @@ if SENSOR3 is not None:
     sensorTypes.append(SENSOR3_TYPE)
 sensorStates = [0] * len(pins)
 sensorBlocked = [False] * len(pins)
+sensorUnblockAt = [None] * len(pins)
 sensors = [Pin(p,Pin.IN,Pin.PULL_UP) if t == "IR" else Pin(p,Pin.IN) for p,t in zip(pins,sensorTypes)]
-sensorTimerCallbacks = [makeSensorTimerDone(i) for i in range(len(sensors))]
-sensorTimers = [Timer(period = 1,mode = Timer.ONE_SHOT,callback = cb) for cb in sensorTimerCallbacks]
 x = 0
 for sensor in sensors:
     sensorStates[x] = not(sensor.value())
@@ -1015,9 +1025,8 @@ pushbuttonPins = [PB1,PB2,PB3]
 pushbuttonTeams = [1,2]  #maps PB1/PB2 (idx 0/1) to a team; PB3 (ACTION_PB_IDX) has no team
 pushbuttonStates = [0,0,0]
 pushbuttonBlocked = [False,False,False]
+pushbuttonUnblockAt = [None,None,None]
 pushbuttons = [Pin(p,Pin.IN) for p in pushbuttonPins]
-pushbuttonTimerCallbacks = [makePushbuttonTimerDone(i) for i in range(len(pushbuttons))]
-pushbuttonTimers = [Timer(period = 1,mode = Timer.ONE_SHOT,callback = cb) for cb in pushbuttonTimerCallbacks]
 for pushbutton in pushbuttons:
     pushbutton.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,handler=pushbuttonInterrupt)
 
@@ -1056,6 +1065,7 @@ wdt = WDT(timeout=8000)
 
 while keepRunning:
     wdt.feed()
+    serviceDebounce()
     readable = []
     if not forceStandAloneMode:
         if not clients:
@@ -1275,10 +1285,6 @@ if not forceStandAloneMode:
 team1LED.value(False)
 team2LED.value(False)
 LED.value(False)
-for t in sensorTimers:
-    t.deinit()
-for t in pushbuttonTimers:
-    t.deinit()
 for sensor in sensors:
     sensor.irq(handler=None)
 for pushbutton in pushbuttons:
