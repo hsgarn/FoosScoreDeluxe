@@ -3,6 +3,27 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.06 08/15/2026
+- Fix the real cause of unreliable menu button response, found via a Pico 2 W + MicroPython
+  v1.28 test that (unlike the original Pico W) didn't freeze and so surfaced the actual
+  Python traceback: `pushbuttonTimers[idx].init(...)` was arming a `machine.Timer` from
+  inside the pin's IRQ handler, which MicroPython's rp2 port raises `OSError 12` (ENOMEM)
+  for - hard-IRQ context can't safely allocate, since the interrupt may have landed
+  mid-garbage-collection. Because that exception aborted `pushbuttonInterrupt` partway
+  through, the two lines after it never ran: `pushbuttonStates[idx]` never reset and
+  `pushbuttonBlocked[idx]` never cleared (only the timer's callback did that), leaving that
+  pin stuck ignoring further presses - the actual "sometimes takes two presses" / unreliable
+  navigation reported across both boards. `sensorInterrupt` had the identical pattern for the
+  goal sensors and would have hit the same failure once real goals were being scored, not
+  just during menu testing.
+  Replaced the per-pin `machine.Timer` debounce with a ticks_ms() deadline (an int, set from
+  the ISR - allocation-free) polled once per main-loop iteration by the new
+  `serviceDebounce()`, which does the actual unblocking outside interrupt context where
+  allocation is always safe. `machine.Timer` is no longer used anywhere in main.py.
+  Whether this was also silently contributing to the original RP2040 board's freezes (on top
+  of the suspected I2C erratum) is unconfirmed - worth retesting the original Pico W with
+  this fix before assuming the I2C mitigations were the only thing needed there too.
+
 ## v3.05 08/15/2026
 - Fix two menu-navigation bugs found while chasing the I2C lockup:
   - PB1/PB2 were debounced with the full gameplay `DELAY_PB` (5000ms, sized to stop one
