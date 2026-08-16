@@ -221,6 +221,11 @@ Same protocol as FoosScorePlus. `ENTER_IDENT`, `ASSIGN`, `FLASH`, and
 `BUSY:<mac>`, since they block the main loop for team-LED animations that
 would otherwise delay score reporting.
 
+`<mac>` in a request is matched case- and separator-insensitively against
+this board's MAC (`-` and `:` are stripped, then lowercased) before
+comparing, so `2C-CF-67-9B-97-14`, `2c:cf:67:9b:97:14`, and `2ccf679b9714`
+are all accepted as the same address.
+
 | Request | Reply | Effect |
 |---|---|---|
 | `DISCOVER_PICO` | `Table <n>:<ip>:<port>:<mac>:<status>` | Always answered. `<status>` is `FREE` or `BUSY:<client ip>[,<client ip>...]`. |

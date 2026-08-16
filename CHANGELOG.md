@@ -3,6 +3,19 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.09 08/16/2026
+Fix `ASSIGN`/`FLASH`/`REPORT_TABLE` silently ignoring a correctly-addressed
+request whenever the caller's `<mac>` used a different format than this
+board's own `mac` (always lowercase, no separators, e.g. `2ccf679b9714`) -
+a request sent as `FLASH:2C-CF-67-9B-97-14` (dashes, uppercase) failed the
+exact string match against `mac` and, since there was no `else`, produced no
+reply at all: the board logged the datagram and then did nothing, which
+looked identical to a dead board from the caller's side. Added
+`normalizeMac()` (strips `-`/`:`, lowercases) and applied it to the `<mac>`
+comparison in all three handlers, so any of `2C-CF-67-9B-97-14`,
+`2c:cf:67:9b:97:14`, or `2ccf679b9714` now matches. Ported from the
+equivalent fix in FoosScorePlus, which shares this UDP protocol.
+
 ## v3.08 08/16/2026
 - Add `WDT_ENABLED` to config.py (optional, defaults to 1/unchanged behavior if omitted -
   same pattern as DEBUGMODE) to run with no watchdog at all without touching source. Every

@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.08 08/16/2026
+#v3.09 08/16/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -981,6 +981,13 @@ time.sleep(2)  #let the CYW43 radio's firmware finish settling before the first 
                #firing connect() immediately after active(True) can lose that race and fail the
                #very first attempt even against a network that's otherwise fine.
 mac = "".join("%02x" % b for b in wlan.config('mac'))
+
+#Callers may send MACs as "2C-CF-67-9B-97-14" or "2c:cf:67:9b:97:14" - normalize
+#before comparing against mac (always lowercase, no separators) so those variants
+#are accepted rather than silently ignored.
+def normalizeMac(s):
+    return s.replace("-", "").replace(":", "").lower()
+
 forceStandAloneMode = False
 WLAN_ATTEMPTS_PER_NETWORK = 1
 WLAN_LIST_PASSES = 2
@@ -1199,7 +1206,7 @@ while keepRunning:
                     print("Identify mode off.")
             elif msg[0:7] == "ASSIGN:":
                 parts = msg.split(":")
-                if len(parts) == 3 and parts[1] == mac and parts[2].isdigit():
+                if len(parts) == 3 and normalizeMac(parts[1]) == mac and parts[2].isdigit():
                     if clients:
                         udp.sendto(f"BUSY:{mac}".encode(),addr)
                         print("ASSIGN refused - game connection active.")
@@ -1213,7 +1220,7 @@ while keepRunning:
                         blinkTableNumber(table_nbr)
             elif msg[0:6] == "FLASH:":
                 parts = msg.split(":")
-                if len(parts) == 2 and parts[1] == mac:
+                if len(parts) == 2 and normalizeMac(parts[1]) == mac:
                     if clients:
                         udp.sendto(f"BUSY:{mac}".encode(),addr)
                         print("FLASH refused - game connection active.")
@@ -1222,7 +1229,7 @@ while keepRunning:
                         identFlash()
             elif msg[0:13] == "REPORT_TABLE:":
                 parts = msg.split(":")
-                if len(parts) == 2 and parts[1] == mac:
+                if len(parts) == 2 and normalizeMac(parts[1]) == mac:
                     if clients:
                         udp.sendto(f"BUSY:{mac}".encode(),addr)
                         print("REPORT_TABLE refused - game connection active.")
