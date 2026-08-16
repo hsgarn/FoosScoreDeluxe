@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.06 08/15/2026
+#v3.08 08/16/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -94,13 +94,28 @@ prevBoxPtrI2CLCD = -1
 LED = Pin("LED",Pin.OUT)
 TABLEFILE = "table.txt"
 ACTION_PB_IDX = 2  #index of PB3 within pushbuttonPins/pushbuttons - the menu "Action" button
+HOSTMAC_LEVEL = 5   #menuLevel for the "Show Host/MAC" submenu (picks between the Show Host
+                     #and Show MAC info screens below)
+SHOWHOST_LEVEL = 6  #menuLevel for the Show Host screen - handleMenuAction() special-cases this
+                     #and SHOWMAC_LEVEL so Action returns to HOSTMAC_LEVEL from any of their
+                     #lines, not just the last one (see the comment at the top of handleMenuAction).
+SHOWMAC_LEVEL = 7   #menuLevel for the Show MAC screen - see SHOWHOST_LEVEL above
+#[connect count, host, port] for the Show Host screen - refreshed each time that screen is
+#entered (see the "Show Host" branch in handleMenuAction); getMenuItems() is called from
+#startup before wlan/host/clients exist, so those can't be read inline here.
+showHostLines = ["","",""]
+#[title, MAC address, blank] for the Show MAC screen - same refresh timing as showHostLines.
+showMacLines = ["","",""]
 
 def getMenuItems():
-    return [["Show Host","StandAlone Mode","FoosOBS+Mode","Adjust","New Match","Reset All","Test Inputs","Test LEDs","Settings","Exit Menu","End Program"],
+    return [["Show Host/MAC","StandAlone Mode","FoosOBS+Mode","Adjust","New Match","Reset All","Test Inputs","Test LEDs","Settings","Exit Menu","End Program"],
             [f"Points To Win  {pointsToWin}",f"Games To Win  {gamesToWin}",f"Balls In Rack  {ballsInRack}",f"RackTour Mode {rtMode}","Exit Settings"],
             [f"Team 1 Score  {teamScore[TEAM1]}",f"Team 2 Score  {teamScore[TEAM2]}",f"Team 1 Games  {teamGames[TEAM1]}",f"Team 2 Games  {teamGames[TEAM2]}",f"Team 1 TimeOuts  {teamTO[TEAM1]}",f"Team 2 TimeOuts  {teamTO[TEAM2]}","Exit Adjust"],
             ["Test","Solid","Time Out Team 1","Time Out Team 2","Score Team 1","Score Team 2","Fade","Rainbow Chase","Blink","Set Color","Clear","Exit Test LEDs"],
-            ["Red","Green","Yellow","Blue","Orange","Indigo","Violet","Clear","Exit Set Color"]
+            ["Red","Green","Yellow","Blue","Orange","Indigo","Violet","Clear","Exit Set Color"],
+            ["Show Host","Show MAC","Exit Show Host/MAC"],
+            [showHostLines[0],showHostLines[1],showHostLines[2],"Return to Menu"],
+            [showMacLines[0],showMacLines[1],showMacLines[2],"Return to Menu"]
             ]
 
 def resetAll():
@@ -249,6 +264,17 @@ def clearCursorI2CLCD(i2cLCD1,prevBoxPtrI2CLCD):
     i2cLCD1.move_to(lcdDisplayWidth-1,prevBoxPtrI2CLCD)
     i2cLCD1.putstr(" ")
 
+def sleepFeedWdt(duration):
+    #Menu actions with a multi-second pause (Show Host, End Program, Solid test) can run mid-game
+    #once wdt is armed, same as blink() et al - a plain time.sleep() here leaves no slack for the
+    #I2C/SPI writes around it, so an unlucky bus delay can tip the total past the WDT timeout.
+    remaining = duration
+    step = .25
+    while remaining > 0:
+        if wdt: wdt.feed()
+        time.sleep(min(step,remaining))
+        remaining -= step
+
 def blink(blinks,duration):
     if skipBlinks:
         return
@@ -334,6 +360,31 @@ def sendIdent(kind,pin):
                         udp.sendto(f"IDENT:{mac}:{kind}:{pin}".encode(),identAddr)
                 except OSError:
                         pass
+
+def dedupClientSessions(clientList):
+    #A client that reconnects (network blip, app restart) before the Pico notices its old
+    #socket died would otherwise sit alongside the new one, both live in `clients` - every
+    #broadcast then goes to that client twice. hello:<id>/ping:<id> let a reconnecting
+    #client identify itself; when two entries share an id, keep only the most recently
+    #registered one (later in list order - clients are appended in connection order) and
+    #close the older, now-stale socket. Entries with no id yet (haven't sent hello/ping
+    #this tick) are left alone.
+    seen = {}
+    result = []
+    for client in clientList:
+        sessionId = client["sessionId"]
+        if sessionId:
+            prior = seen.get(sessionId)
+            if prior is not None:
+                print(f"Session {sessionId}: closing stale connection from {prior['addr']}")
+                try:
+                    prior["sock"].close()
+                except OSError:
+                    pass
+                result.remove(prior)
+            seen[sessionId] = client
+        result.append(client)
+    return result
 
 #Each sensor/pushbutton pin gets its own block flag and debounce deadline so one pin's
 #debounce window never masks another pin's IRQ - including PB3, the menu Action button.
@@ -560,10 +611,20 @@ def incrementValue():
 
 def handleMenuAction(action,obs_lines):
     global menuLevel,cursorLineI2CLCD,menuPtr,isMenuOn,isFoosOBSMode,isStandAloneMode,isTestMode,keepRunning,changeValueMode,currentPageI2CLCD
+    #The Show Host and Show MAC screens are read-only info, not a set of distinct actions like
+    #every other menu level - Action should return to the Show Host/MAC submenu no matter which
+    #of its 4 lines the cursor happens to be on, so this is checked by level before the usual
+    #text-matching below (which would otherwise only recognize the "Return to Menu" line itself).
+    if menuLevel == SHOWHOST_LEVEL or menuLevel == SHOWMAC_LEVEL:
+        menuLevel = HOSTMAC_LEVEL
+        menuPtr = 0
+        currentPageI2CLCD = -1
+        mainMenu()
+        return
     if any(action.startswith(prefix) for prefix in toggleActions):
         changeValueMode = not changeValueMode
     elif action[:4] == "Exit":
-        if menuLevel == 2 or menuLevel == 3:
+        if menuLevel == 2 or menuLevel == 3 or menuLevel == HOSTMAC_LEVEL:
             menuLevel = 0
         else:
             menuLevel -= 1
@@ -591,7 +652,7 @@ def handleMenuAction(action,obs_lines):
         sendFoosOBSPlusScreen(foosOBSLines[0],foosOBSLines)
         led_strip.send_command("rainbowchase",allLEDs,100)
         keepRunning = False
-        time.sleep(5)
+        sleepFeedWdt(5)
         i2cLCD1.clear()
     elif action == "Reset All":
         debug("reset All selected",level="INFO")
@@ -657,23 +718,29 @@ def handleMenuAction(action,obs_lines):
         isStandAloneMode = True
         isMenuOn = False
         updateScoreScreen()
+    elif action == "Show Host/MAC":
+        menuLevel = HOSTMAC_LEVEL
+        menuPtr = 0
+        mainMenu()
     elif action == "Show Host":
-        if not forceStandAloneMode and wlan.isconnected():
-            hostLine = host
-        else:
-            hostLine = "No IP Address"
-        portLine = f"Port: {port}" if not forceStandAloneMode else "Standalone Mode"
-        connectLine = f"{len(clients)} Client(s)" if clients else "No Client Connected"
-        tempFoosOBSLines = [connectLine,hostLine,portLine,'']
-        updateFoosOBSScreen(tempFoosOBSLines)
-        time.sleep(3)
-        currentPageI2CLCD = -1
+        showHostLines[0] = f"{len(clients)} Client(s)" if clients else "No Client Connected"
+        showHostLines[1] = host if (not forceStandAloneMode and wlan.isconnected()) else "No IP Address"
+        showHostLines[2] = f"Port: {port}" if not forceStandAloneMode else "Standalone Mode"
+        menuLevel = SHOWHOST_LEVEL
+        menuPtr = len(getMenuItems()[SHOWHOST_LEVEL]) - 1  #default cursor to "Return to Menu"
+        mainMenu()
+    elif action == "Show MAC":
+        showMacLines[0] = "MAC Address"
+        showMacLines[1] = ":".join(mac[i:i+2] for i in range(0,len(mac),2))
+        showMacLines[2] = ""
+        menuLevel = SHOWMAC_LEVEL
+        menuPtr = len(getMenuItems()[SHOWMAC_LEVEL]) - 1  #default cursor to "Return to Menu"
         mainMenu()
     elif action == "Test":
         testLEDs(.1)
     elif action == "Solid":
         led_strip.send_command("solid",allLEDs,3,green)
-        time.sleep(3)
+        sleepFeedWdt(3)
         clearLEDStrip()
     elif action == "Time Out Team 1":
         stripTimeOut(0)
@@ -811,6 +878,10 @@ DEBUGMODE      = bool(getattr(config,"DEBUGMODE",0))
 DEBUG          = DEBUGMODE
 netmsg.DEBUG   = DEBUG
 debuglog.LOG_LEVEL = "DEBUG" if DEBUGMODE else "INFO"
+#Flip to 0 in config.py to run with no watchdog at all - trades away auto-recovery from a
+#genuine hang (an unrelated hardware/firmware freeze would then need a manual power cycle
+#instead of self-recovering) for no more resets from a feed-timing gap not yet found/fixed.
+WDT_ENABLED    = bool(getattr(config,"WDT_ENABLED",1))
 
 #A remotely assigned table number in table.txt takes precedence over config.TABLE
 try:
@@ -866,11 +937,11 @@ if pinCollision:
     sys.exit()
 
 #Display hardware - I2C LCD (always) + SPI color TFT (only if tftEnabled)
-#freq is 100kHz (not the 400kHz fast-mode default) to reduce the odds of tripping RP2040
-#errata E14, where a bus noise glitch can permanently wedge the I2C peripheral - the LCD's
-#menu redraws are I2C-write-heavy (dozens of writeto() calls per screen), and a wedged
-#peripheral hangs the whole board with no exception and no serial output.
-i2c = I2C(id=I2C1,scl=Pin(SCL),sda=Pin(SDA),freq=100000)
+#Back to the 400kHz fast-mode default (was dropped to 100kHz in v3.03 as a mitigation for
+#suspected RP2040 errata E14 - a bus noise glitch permanently wedging the I2C peripheral -
+#but the actual cause of the freezes/unreliable menu response turned out to be the
+#Timer-in-ISR ENOMEM bug fixed in v3.06, not I2C speed).
+i2c = I2C(id=I2C1,scl=Pin(SCL),sda=Pin(SDA),freq=400000)
 i2cLCD1 = I2cLcd(i2c,0x27,4,20)
 maxRowI2CLCD = 4
 txtSize = 1.5
@@ -1058,13 +1129,15 @@ led_strip.send_command("rainbowchase",allLEDs,100)
 showMenuSPILCD(getMenuItems(),0,0)
 
 #Armed only now - startup (WiFi connect retries, etc) can legitimately run past the
-#RP2040's ~8.3s max WDT timeout and isn't fed. From here on, an unfed board (most likely
-#an I2C peripheral wedge - see the freq=100000 comment above) reboots itself instead of
-#staying frozen until someone finds the power switch.
-wdt = WDT(timeout=8000)
+#RP2040's ~8.3s max WDT timeout and isn't fed. From here on, an unfed board (e.g. a wedged
+#I2C peripheral) reboots itself instead of staying frozen until someone finds the power
+#switch. Set WDT_ENABLED = 0 in config.py to run without it entirely - every feed() call
+#below is already guarded with `if wdt:` since wdt is None until this point, so leaving it
+#None permanently is enough; nothing else needs to change.
+wdt = WDT(timeout=8000) if WDT_ENABLED else None
 
 while keepRunning:
-    wdt.feed()
+    if wdt: wdt.feed()
     serviceDebounce()
     readable = []
     if not forceStandAloneMode:
@@ -1161,8 +1234,13 @@ while keepRunning:
         time.sleep(SELECT_TIMEOUT)
 
     #Drain every event queued since the last iteration - not just one - so a burst of closely
-    #spaced goals/timeouts/menu-presses is reported/handled in full.
+    #spaced goals/timeouts/menu-presses is reported/handled in full. That burst is exactly the
+    #case with no slack against the WDT: each event's handler does I2C writes and can iterate
+    #every connected client's socket, and up to EVENT_BUFFER_SIZE events can be processed here
+    #without returning to the top of the main loop, so this loop feeds the watchdog itself
+    #rather than relying on the feed at the top of the next iteration.
     while True:
+        if wdt: wdt.feed()
         event = popEvent()
         if event is None:
             break
@@ -1246,7 +1324,17 @@ while keepRunning:
                     sendConfigFile(sock)
                     client["rxBuffer"] = ""
                 elif cmd[0]=="ping":
+                    if len(cmd) > 1 and cmd[1].strip():
+                        client["sessionId"] = cmd[1].strip()
                     sendMessage(sock,"pong\r\n")
+                    client["rxBuffer"] = ""
+                elif cmd[0]=="hello":
+                    #Sent once right after a client connects, carrying an id it keeps across
+                    #its own reconnects (also echoed in every "ping:<id>"). Lets a fresh
+                    #connection be recognized as superseding a stale one the Pico hasn't
+                    #noticed died yet - see dedupClientSessions().
+                    if len(cmd) > 1 and cmd[1].strip():
+                        client["sessionId"] = cmd[1].strip()
                     client["rxBuffer"] = ""
                 elif cmd[0]=="save":
                     if len(cmd) > 1 and "End" in cmd[1]:
@@ -1257,7 +1345,7 @@ while keepRunning:
                     client["rxBuffer"] = ""
             if keep:
                 survivors.append(client)
-        clients = survivors
+        clients = dedupClientSessions(survivors)
         if hadClients and not clients:
             listenCount = 0
 
@@ -1265,7 +1353,7 @@ while keepRunning:
             newSock,addr = s.accept()
             connectCount += 1
             newSock.settimeout(.01)
-            clients.append({"sock": newSock,"addr": addr[0],"rxBuffer": ""})
+            clients.append({"sock": newSock,"addr": addr[0],"rxBuffer": "","sessionId": None})
             identMode = False
             identAddr = None
             lastClientAddr = addr[0]

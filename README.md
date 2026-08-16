@@ -195,11 +195,24 @@ with another's.
 |---|---|
 | `reset:` | Calls `machine.reset()`. |
 | `read:` | Sends the current `config.py` back to the requesting client. |
-| `ping:` | Replies `pong\r\n`. |
+| `hello:<sessionId>` | Registers this connection's session id. Sent once, right after connecting. |
+| `ping:<sessionId>` | Replies `pong\r\n`. Also (re-)registers the session id, same as `hello`. |
 | `save:<new config lines>...End` | Validates and writes a new `config.py`, backing up the old one first. Aborted (with a serial message) on invalid config, a missing `date` line, or an unchanged config. |
 
 Any other command name is discarded once a full `name:` prefix has been
 received, so a corrupt/unrecognized command can't wedge a client's buffer.
+
+**Session ids and stale-connection cleanup:** a client picks its own session id once
+(e.g. a UUID) and reuses it across every reconnect it makes on its own, sending it with
+`hello` right after connecting and with every `ping`. If a client disconnects without the
+Pico noticing (no FIN/RST ever arrives - see the main loop's socket handling) and then
+reconnects, the Pico would otherwise end up with two live entries for the same logical
+client, broadcasting every score/time-out to both. Instead, whenever a `hello`/`ping`
+carries a session id matching an existing connection's, the Pico closes that older
+connection and keeps only the new one. A client that never sends a session id (or an older
+client build) is left alone - this is additive, not required. There's still no general
+liveness timeout: a connection that goes silent and is never superseded by a same-session
+reconnect stays tracked until the OS-level socket itself reports an error.
 
 ## UDP discovery/management protocol (`DPORT`)
 

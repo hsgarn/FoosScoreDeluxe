@@ -3,6 +3,55 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.08 08/16/2026
+- Add `WDT_ENABLED` to config.py (optional, defaults to 1/unchanged behavior if omitted -
+  same pattern as DEBUGMODE) to run with no watchdog at all without touching source. Every
+  `wdt.feed()` call site was already guarded with `if wdt:` (needed for the pre-arming
+  startup window), so leaving `wdt` at its default `None` for the whole run - instead of
+  arming a real `machine.WDT` - was enough; the only unguarded call was the one at the top
+  of the main loop, now guarded to match.
+- Fix another WDT-trip gap, this time in the main loop's event-draining loop rather than a
+  menu action: it deliberately processes every queued event in one pass (up to
+  EVENT_BUFFER_SIZE=16) before returning to the top of the main loop, so a burst of
+  closely-spaced goal/time-out presses - each handler doing I2C writes and iterating every
+  connected client's socket - could run for a while with no `wdt.feed()` in between. Added a
+  feed at the top of that loop, once per event drained.
+- Rework Show Host into a real menu screen (new `SHOWHOST_LEVEL`) instead of a fixed 3-second
+  display: a 4th line now reads "Return to Menu", the cursor defaults to it, and pressing
+  Action returns to the main menu from any of the 4 lines (handleMenuAction special-cases
+  this level by number before its usual per-item text matching, since none of the other 3
+  lines - client count, host, port - are real actions). The screen now stays up until
+  dismissed rather than auto-returning after 3s.
+- Fix a WDT trip triggerable from the menu: `blink()`/`allBlink()`/`blinkDigit()`/
+  `blinkTableNumber()`/`identFlash()` were already patched to feed the watchdog during their
+  long loops (see v3.06), but three multi-second `time.sleep()` calls added directly in
+  `handleMenuAction()` - Show Host's 3s pause, End Program's 5s pause, and Test LEDs' Solid
+  color's 3s pause - were missed. Each left zero slack against the 8s WDT timeout once the
+  surrounding I2C/SPI redraw overhead is added in, so a slower-than-usual bus transaction
+  (seen with an external power supply attached) could tip the total over the limit and
+  reboot the board mid-menu. Replaced all three with a new `sleepFeedWdt()` helper that
+  feeds the watchdog every 250ms while sleeping, matching the existing blink-family pattern.
+- Fix duplicate score/time-out broadcasts when a FoosOBSPlus client reconnects (network
+  blip, app restart) before the Pico notices its old TCP connection died - the stale
+  connection stayed in `clients` alongside the new one, so every broadcast went out twice.
+  The client-side fix (foosobsplus-vscode, AutoScoreManager.java) now generates a session
+  id once per manager instance and sends it via a new `hello:<id>` right after connecting,
+  and with every `ping:<id>` (previously just `ping:`) thereafter. The Pico's `clients`
+  entries now track `sessionId`; the new `dedupClientSessions()`, run once per main-loop
+  tick after servicing every client, closes and drops the older of any two connections that
+  announce the same session id, keeping only the reconnecting one. No general liveness
+  timeout was added - a connection that goes silent and is never superseded by a
+  same-session reconnect is unaffected, still relying on the OS-level socket eventually
+  reporting an error (see README.md's "Session ids and stale-connection cleanup").
+- Add a Show MAC screen alongside Show Host: the main menu's "Show Host" item is now
+  "Show Host/MAC", leading to a new submenu (`HOSTMAC_LEVEL`) with "Show Host" and
+  "Show MAC" entries. Both info screens (`SHOWHOST_LEVEL`, `SHOWMAC_LEVEL`) behave like the
+  old Show Host screen - Action returns from any line - except now they return to the
+  Show Host/MAC submenu instead of the main menu, matching how every other nested screen
+  backs out one level at a time.
+
+## v3.07 08/15/2026
+- Revert the LCD's I2C bus from 100kHz back to the 400kHz fast-mode default.
 ## v3.06 08/15/2026
 - Fix the real cause of unreliable menu button response, found via a Pico 2 W + MicroPython
   v1.28 test that (unlike the original Pico W) didn't freeze and so surfaced the actual
