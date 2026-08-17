@@ -3,6 +3,18 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.10 08/17/2026
+Fix LASER-sensor tables registering extra goals: unlike IR break-beam sensors, which sit
+behind brackets that make it physically impossible for a ball to reach more than one team's
+sensor, laser sensors typically share one ball-return channel, so a single scored ball can
+trip more than one laser (another sensor on the same team, or the opposing team's sensor a
+second or two later) and produce a second, spurious goal event. Debounce was per-pin only,
+so each laser sensor's own block never stopped a *different* laser sensor from firing. Added
+a shared `laserGroupBlocked` flag: any `"LASER"`-type sensor firing now blocks every other
+`"LASER"`-type sensor (regardless of team) until `DELAY_SENSOR` clears. `"IR"` sensors are
+unaffected and keep independent per-pin debounce. Ported from the equivalent fix in
+FoosScorePlus, which shares this sensor debounce design.
+
 ## v3.09 08/16/2026
 Fix `ASSIGN`/`FLASH`/`REPORT_TABLE` silently ignoring a correctly-addressed
 request whenever the caller's `<mac>` used a different format than this

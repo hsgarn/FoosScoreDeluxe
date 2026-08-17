@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.09 08/16/2026
+#v3.10 08/17/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -396,12 +396,19 @@ def dedupClientSessions(clientList):
 #pushbuttonBlocked[idx] were reset - leaving that pin stuck ignoring presses.
 def sensorInterrupt(pin):
     global sensorStates
+    global laserGroupBlocked
     idx = sensors.index(pin)
     sensor = sensors[idx]
+    isLaser = sensorTypes[idx] == "LASER"
+    #Gate LASER sensors on the shared laserGroupBlocked flag instead of their own
+    #sensorBlocked[idx] - see the comment where laserGroupBlocked is declared.
+    blocked = laserGroupBlocked if isLaser else sensorBlocked[idx]
     if (sensor.value() == onState) and (sensorStates[idx] == 0):
-        if not(sensorBlocked[idx]):
+        if not(blocked):
             sensorStates[idx] = 1
             sensorBlocked[idx] = True
+            if isLaser:
+                laserGroupBlocked = True
             leds[idx].value(1)
             pushEvent(EVENT_GOAL,teams[idx],pins[idx])
     elif (sensor.value() == offState) and (sensorStates[idx] == 1):
@@ -437,6 +444,7 @@ def serviceDebounce():
     #Called once per main-loop iteration (never from IRQ context) to clear a pin's block flag
     #once its debounce window has passed - the allocation-safe replacement for what the
     #Timer.ONE_SHOT callbacks used to do.
+    global laserGroupBlocked
     now = time.ticks_ms()
     for idx in range(len(sensorUnblockAt)):
         deadline = sensorUnblockAt[idx]
@@ -444,6 +452,8 @@ def serviceDebounce():
             sensorBlocked[idx] = False
             leds[idx].value(0)
             sensorUnblockAt[idx] = None
+            if sensorTypes[idx] == "LASER":
+                laserGroupBlocked = False
     for idx in range(len(pushbuttonUnblockAt)):
         deadline = pushbuttonUnblockAt[idx]
         if deadline is not None and time.ticks_diff(now,deadline) >= 0:
@@ -1087,6 +1097,13 @@ if SENSOR3 is not None:
 sensorStates = [0] * len(pins)
 sensorBlocked = [False] * len(pins)
 sensorUnblockAt = [None] * len(pins)
+#LASER sensors share one physical ball-return channel, so a single ball can trip more than
+#one of them (another sensor on the same team, or the opposing team's sensor a moment later).
+#laserGroupBlocked is a single flag shared by every "LASER"-type sensor so the first trip
+#locks out the rest of the group until DELAY_SENSOR clears it - see sensorInterrupt() and
+#serviceDebounce(). IR sensors are unaffected and keep independent per-pin sensorBlocked,
+#since brackets already make that kind of cross-sensor trip physically impossible for them.
+laserGroupBlocked = False
 sensors = [Pin(p,Pin.IN,Pin.PULL_UP) if t == "IR" else Pin(p,Pin.IN) for p,t in zip(pins,sensorTypes)]
 x = 0
 for sensor in sensors:

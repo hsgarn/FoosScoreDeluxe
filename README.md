@@ -83,7 +83,7 @@ error printed over serial.
 | `SENSOR1_TYPE`, `SENSOR2_TYPE` | yes | `"IR"` or `"LASER"`. |
 | `SENSOR3_TYPE` | no | `"IR"` or `"LASER"`, only if `SENSOR3` is set. |
 | `LED1`, `LED2` | yes | GPIO pins for the two team LEDs. |
-| `DELAY_SENSOR` | yes | Debounce time (ms, 1-60000) after a sensor's LED-on edge before it can trigger again. |
+| `DELAY_SENSOR` | yes | Debounce time (ms, 1-60000) after a sensor's LED-on edge before it can trigger again. For `"LASER"` sensors this block is shared across *all* configured laser sensors (any team), not just the one that fired - since a laser table's sensors typically sit along one shared ball-return channel, where a single ball can otherwise trip more than one of them and register extra goals. `"IR"` sensors keep independent per-sensor debounce, since break-beam brackets already make that kind of cross-sensor trip physically impossible. |
 | `DELAY_PB` | yes | Debounce time (ms, 1-60000) for the time-out pushbuttons (`PB1`/`PB2`). |
 | `DELAY_ACTION_PB` | yes | Debounce time (ms, 1-60000) for the menu Action button (`PB3`). |
 | `PB1`, `PB2` | yes | GPIO pins for the two time-out pushbuttons. |
