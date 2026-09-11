@@ -17,11 +17,10 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.10 08/17/2026
+#v3.11 09/10/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
-import secrets
 import config
 import time
 import sys
@@ -54,6 +53,14 @@ except ImportError:
         import ussl as ssl
     except ImportError:
         ssl = None
+
+try:
+    import secrets
+except ImportError:
+    debug("secrets.py not found - skipping automatic Wi-Fi connect. Use the on-device menu's "
+          "\"Wi-Fi Setup\" item to create one.",level="WARNING")
+    class secrets:
+        NETWORKS = []
 
 try:
     import secretsIref
@@ -108,7 +115,7 @@ showHostLines = ["","",""]
 showMacLines = ["","",""]
 
 def getMenuItems():
-    return [["Show Host/MAC","StandAlone Mode","FoosOBS+Mode","Adjust","New Match","Reset All","Test Inputs","Test LEDs","Settings","Exit Menu","End Program"],
+    return [["Show Host/MAC","Wi-Fi Setup","StandAlone Mode","FoosOBS+Mode","Adjust","New Match","Reset All","Test Inputs","Test LEDs","Settings","Exit Menu","End Program"],
             [f"Points To Win  {pointsToWin}",f"Games To Win  {gamesToWin}",f"Balls In Rack  {ballsInRack}",f"RackTour Mode {rtMode}","Exit Settings"],
             [f"Team 1 Score  {teamScore[TEAM1]}",f"Team 2 Score  {teamScore[TEAM2]}",f"Team 1 Games  {teamGames[TEAM1]}",f"Team 2 Games  {teamGames[TEAM2]}",f"Team 1 TimeOuts  {teamTO[TEAM1]}",f"Team 2 TimeOuts  {teamTO[TEAM2]}","Exit Adjust"],
             ["Test","Solid","Time Out Team 1","Time Out Team 2","Score Team 1","Score Team 2","Fade","Rainbow Chase","Blink","Set Color","Clear","Exit Test LEDs"],
@@ -492,6 +499,19 @@ def updateFoosOBSScreen(foosOBSLines):
         i2cLCD1.putstr(f"{line:<{lcdDisplayWidth}}")
         x+=1
 
+def showWifiSetupScreen(ssid,ip):
+    #on_ready callback for wifi_setup.run_captive_portal() - shows the setup AP's name and
+    #address on the I2C LCD once it's up, since this board (unlike base FoosScorePlus) has a
+    #display to read them from instead of needing a fixed, pre-documented IP. The generated
+    #SSID (see wifi_setup.py's "FoosScoreSetup-<mac6>") always runs longer than one
+    #lcdDisplayWidth-wide line, so it's wrapped across the two middle lines rather than
+    #truncated - a customer needs the exact full name to find and join it on their phone.
+    lines = ['','','','']
+    lines = sendFoosOBSPlusScreen("Wi-Fi Setup Mode",lines)
+    lines = sendFoosOBSPlusScreen(ssid[:lcdDisplayWidth],lines)
+    lines = sendFoosOBSPlusScreen(ssid[lcdDisplayWidth:2*lcdDisplayWidth],lines)
+    lines = sendFoosOBSPlusScreen(f"http://{ip}/",lines)
+
 def updateScoreScreen():
     global currentPageI2CLCD
     currentPageI2CLCD = -1
@@ -732,6 +752,18 @@ def handleMenuAction(action,obs_lines):
         menuLevel = HOSTMAC_LEVEL
         menuPtr = 0
         mainMenu()
+    elif action == "Wi-Fi Setup":
+        #Blocks until the customer submits new credentials (saved to secrets.py, then
+        #machine.reset()) - standalone/FoosOBS+ mode resume normally on the reboot that
+        #follows. Unlike the base FoosScorePlus project, this is never entered automatically
+        #on a failed connection - a table that's intentionally offline stays in standalone
+        #mode, exactly as it does today.
+        debug("Wi-Fi Setup selected",level="INFO")
+        isMenuOn = False
+        currentPageI2CLCD = -1
+        i2cLCD1.clear()
+        import wifi_setup
+        wifi_setup.run_captive_portal(wlan,secrets.NETWORKS,team1LED,team2LED,on_ready=showWifiSetupScreen)
     elif action == "Show Host":
         showHostLines[0] = f"{len(clients)} Client(s)" if clients else "No Client Connected"
         showHostLines[1] = host if (not forceStandAloneMode and wlan.isconnected()) else "No IP Address"
@@ -1001,10 +1033,22 @@ def normalizeMac(s):
 forceStandAloneMode = False
 WLAN_ATTEMPTS_PER_NETWORK = 1
 WLAN_LIST_PASSES = 2
-WLAN_CONNECT_TIMEOUT = 8  #seconds to wait for one connect() attempt to resolve
+WLAN_CONNECT_TIMEOUT = 20  #seconds to wait for one connect() attempt to resolve - a mesh
+                            #network's extra roaming/backhaul negotiation can leave a connect()
+                            #attempt sitting in STAT_CONNECTING well past a single AP's usual
+                            #8s, so this needs enough slack for that rather than the plain
+                            #associate-and-DHCP case alone
 WLAN_POLL_INTERVAL = .25
 WLAN_FAIL_STATUSES = set(s for s in (getattr(network,name,None) for name in
                           ("STAT_WRONG_PASSWORD","STAT_NO_AP_FOUND","STAT_CONNECT_FAIL")) if s is not None)
+#Reverse lookup so a failed attempt's wlan.status() can be logged by name (STAT_WRONG_PASSWORD,
+#STAT_NO_AP_FOUND, etc) instead of a bare int - the only way to tell those apart from a plain
+#timeout (still STAT_CONNECTING/STAT_IDLE when the deadline hits) without this.
+WLAN_STATUS_NAMES = {}
+for _name in ("STAT_IDLE","STAT_CONNECTING","STAT_WRONG_PASSWORD","STAT_NO_AP_FOUND","STAT_CONNECT_FAIL","STAT_GOT_IP"):
+    _val = getattr(network,_name,None)
+    if _val is not None:
+        WLAN_STATUS_NAMES[_val] = _name
 if not skipNetwork:
     listPass = 0
     while not wlan.isconnected() and listPass < WLAN_LIST_PASSES:
@@ -1027,6 +1071,9 @@ if not skipNetwork:
                     if wlan.isconnected() or wlan.status() in WLAN_FAIL_STATUSES:
                         break
                     time.sleep(WLAN_POLL_INTERVAL)
+                if not wlan.isconnected():
+                    status = wlan.status()
+                    debug(f"{ssid}: connect failed (status={WLAN_STATUS_NAMES.get(status,status)})",level="WARNING")
 if not wlan.isconnected():
     forceStandAloneMode = True
 

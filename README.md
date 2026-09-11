@@ -41,7 +41,8 @@ different from a plain FoosScorePlus board.
 | [ledstrip.py](ledstrip.py) | The `LEDStrip` class - NeoPixel command queue and animation patterns. |
 | [iref.py](iref.py) | The `IrefClient` class - iRefFoos Remote Command API HTTP client and its report queue. |
 | [config.py](config.py) | Per-table hardware/network configuration (pins, ports, delays, table number, display/LED-strip pins, iRefFoos settings). |
-| [secrets.py](secrets.py) | WiFi SSID/password list (`NETWORKS`), tried in order until one connects. |
+| [wifi_setup.py](wifi_setup.py) | Wi-Fi setup captive portal, entered from the on-device menu's "Wi-Fi Setup" item (see [Wi-Fi setup portal](#wi-fi-setup-portal)). Ported from FoosScorePlus. |
+| [secrets.py](secrets.py) | WiFi SSID/password list (`NETWORKS`), tried in order until one connects. Can also be written by the Wi-Fi setup portal instead of over USB. |
 | [secretsIref.py](secretsIref.py) | iRefFoos API key. Optional - only needed if `IREF = 1` in `config.py`. |
 | `table.txt` | Written/read at runtime by `main.py`. Holds a remotely assigned table number that overrides `config.TABLE`. Not checked into the repo. |
 
@@ -135,6 +136,38 @@ own match logic (points-to-win, games-to-win, balls-in-rack, game/match-win
 detection, rack-vs-tournament mode). The menu's "StandAlone Mode"/
 "FoosOBS+Mode" items can also switch modes manually at any time when network
 is available.
+
+This is a deliberate, fully-supported mode - a table can run standalone
+forever on purpose - so unlike FoosScorePlus, an unreachable network does
+*not* automatically open the Wi-Fi setup portal below; it only opens when
+someone chooses "Wi-Fi Setup" from the menu.
+
+## Wi-Fi setup portal
+
+Lets a customer get a table onto their own network without connecting to the
+Pico over USB. Ported from FoosScorePlus's [wifi_setup.py](wifi_setup.py),
+and reached from the main menu's "Wi-Fi Setup" item:
+
+1. The board opens its own open access point named `FoosScoreSetup-<last 6
+   hex digits of the MAC>` and starts a minimal DNS server that resolves
+   every hostname to itself, so a phone or laptop that joins it gets the
+   normal "sign in to network" captive-portal prompt.
+2. The AP's name and setup address are also shown on the I2C LCD - unlike the
+   base project, this board has a display, so there's no need to memorize a
+   fixed IP ahead of time.
+3. Opening that prompt (or browsing to the address shown) shows a one-field
+   setup page, pre-filled with a dropdown of nearby SSIDs found during a scan.
+4. Submitting a network name and password writes it into `secrets.py` (added
+   to, not replacing, any networks already listed there) and reboots the
+   board.
+5. On reboot the normal connect sequence runs again with the new
+   credentials. If they're wrong, standalone mode kicks in as usual - "Wi-Fi
+   Setup" from the menu tries again.
+
+The two team LEDs (`team1LED`/`team2LED`) alternate every half second while
+the portal is waiting for a submission, on the same GPIOs already wired for
+them - the LED strip isn't used for this since it's driven from `core1Worker`,
+which the portal's blocking wait doesn't service.
 
 ## Main loop
 

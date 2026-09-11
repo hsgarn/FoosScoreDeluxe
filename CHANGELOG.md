@@ -3,6 +3,26 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.11 09/10/2026
+Add a "Wi-Fi Setup" menu item so a customer's network can be configured from
+a phone instead of over USB. Selecting it (new `wifi_setup.py`, ported from
+FoosScorePlus) opens an open access point (`FoosScoreSetup-<MAC suffix>` -
+no table number, since the MAC suffix alone is already unique per board),
+spoofs DNS so a joining phone's captive-portal prompt fires automatically,
+and shows the AP name and setup URL right on the I2C LCD (this board has a
+display, so unlike the base project's fixed-IP fallback, the customer just
+reads it off the screen) - the SSID still runs a few characters past one
+20-char LCD line, so `showWifiSetupScreen()` wraps it across the display's
+two middle lines instead of truncating it, since a customer needs the exact
+full name to find and join it. Submitting a network in the resulting form
+writes it to `secrets.py` and reboots. Unlike FoosScorePlus, this does
+**not** run automatically when no network connects - this project already
+has a fully-supported `StandAlone Mode` for tables that intentionally run
+without Wi-Fi, so an unconfigured/unreachable network still falls back to
+that as before; the portal only opens when explicitly selected from the menu.
+The two team LEDs (`team1LED`/`team2LED`) alternate every half second while
+the portal waits, reusing the same GPIOs already wired for them.
+
 ## v3.10 08/17/2026
 Fix LASER-sensor tables registering extra goals: unlike IR break-beam sensors, which sit
 behind brackets that make it physically impossible for a ball to reach more than one team's
