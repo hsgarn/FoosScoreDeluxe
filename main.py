@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.12 09/10/2026
+#v3.13 09/10/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -639,6 +639,25 @@ def decrementValue():
 def incrementValue():
     _update_value(1)
 
+def tryConnectFoosOBS():
+    #Called when FoosOBS+Mode is selected from the menu while the table is offline
+    #(forceStandAloneMode True, from a failed boot-time connect or a cancelled Wi-Fi Setup).
+    #Gives the network one more try instead of requiring a reboot to get out of standalone mode -
+    #same connect+socket-setup path as boot, just triggered on demand. Returns whether the
+    #caller should actually enter FoosOBS+Mode or fall back to the menu.
+    global forceStandAloneMode
+    if connectWifi():
+        forceStandAloneMode = False
+        led_strip.send_command("solid",allLEDs,1,softyellow)
+        blink(2,.25)
+        bindSockets()
+        return True
+    led_strip.send_command("solid",allLEDs,1,red)
+    blink(4,.25)
+    sendFoosOBSPlusScreen('Unable to connect to host',foosOBSLines)
+    debug('FoosOBS+Mode reconnect failed - staying in standalone mode',level="WARNING")
+    return False
+
 def handleMenuAction(action,obs_lines):
     global menuLevel,cursorLineI2CLCD,menuPtr,isMenuOn,isFoosOBSMode,isStandAloneMode,isTestMode,keepRunning,changeValueMode,currentPageI2CLCD,forceStandAloneMode
     #The Show Host and Show MAC screens are read-only info, not a set of distinct actions like
@@ -732,15 +751,29 @@ def handleMenuAction(action,obs_lines):
         pbLabels = " ".join(f"P{p}" for p in pushbuttonPins)
         i2cLCD1.putstr(f"{sensorLabels} {pbLabels}")
     elif action == "FoosOBS+Mode":
-        line = f"{action} Enabled"
-        debug(line,level="INFO")
-        isFoosOBSMode = True
-        isTestMode = False
-        isStandAloneMode = False
-        isMenuOn = False
-        currentPageI2CLCD = -1
-        foosOBSLines[:] = ['','','','']
-        sendFoosOBSPlusScreen(line,foosOBSLines)
+        enterMode = True
+        resetBuffer = True
+        if forceStandAloneMode:
+            enterMode = tryConnectFoosOBS()
+            resetBuffer = False  #tryConnectFoosOBS() already left a status message on screen
+                                 #(connected-host info on success, "Unable to connect" on
+                                 #failure) - don't clobber it with a blank reset before showing
+                                 #the "Enabled" line below.
+        if enterMode:
+            line = f"{action} Enabled"
+            debug(line,level="INFO")
+            isFoosOBSMode = True
+            isTestMode = False
+            isStandAloneMode = False
+            isMenuOn = False
+            currentPageI2CLCD = -1
+            if resetBuffer:
+                foosOBSLines[:] = ['','','','']
+            sendFoosOBSPlusScreen(line,foosOBSLines)
+        else:
+            currentPageI2CLCD = -1
+            menuPtr = 0
+            mainMenu()
     elif action == "StandAlone Mode":
         debug("{} Enabled",action,level="INFO")
         isFoosOBSMode = False
@@ -1062,32 +1095,42 @@ for _name in ("STAT_IDLE","STAT_CONNECTING","STAT_WRONG_PASSWORD","STAT_NO_AP_FO
     _val = getattr(network,_name,None)
     if _val is not None:
         WLAN_STATUS_NAMES[_val] = _name
-if not skipNetwork:
-    listPass = 0
-    while not wlan.isconnected() and listPass < WLAN_LIST_PASSES:
-        listPass += 1
-        for ssid,password in secrets.NETWORKS:
-            if wlan.isconnected():
-                break
-            attempts = 0
-            while not wlan.isconnected() and attempts < WLAN_ATTEMPTS_PER_NETWORK:
-                attempts += 1
-                foosOBSLines = sendFoosOBSPlusScreen(f"Trying {ssid}",foosOBSLines)
-                wlan.connect(ssid,password)
-                blink(3,.25)
-                #Poll status instead of a flat sleep: bails out early on a definitive failure
-                #(wrong password/no AP found/connect fail) so a dead network in the list doesn't
-                #eat the same fixed wait every pass, but keeps waiting (up to the timeout) for a
-                #real network that's just being slow to associate.
-                deadline = time.ticks_add(time.ticks_ms(),int(WLAN_CONNECT_TIMEOUT * 1000))
-                while time.ticks_diff(deadline,time.ticks_ms()) > 0:
-                    if wlan.isconnected() or wlan.status() in WLAN_FAIL_STATUSES:
-                        break
-                    time.sleep(WLAN_POLL_INTERVAL)
-                if not wlan.isconnected():
-                    status = wlan.status()
-                    debug(f"{ssid}: connect failed (status={WLAN_STATUS_NAMES.get(status,status)})",level="WARNING")
-if not wlan.isconnected():
+def connectWifi():
+    #Tries every network in secrets.NETWORKS (bounded attempts each), repeating the whole list
+    #up to WLAN_LIST_PASSES times, same as the original boot-time-only logic this was extracted
+    #from. Also reused by FoosOBS+Mode's on-demand reconnect from the menu (see there) so a
+    #table that failed to connect at boot can get another shot without a reboot - that call
+    #happens after wdt is armed, unlike the boot call, so the poll loop below feeds it too (a
+    #no-op at boot, where wdt is still None).
+    if not skipNetwork:
+        listPass = 0
+        while not wlan.isconnected() and listPass < WLAN_LIST_PASSES:
+            listPass += 1
+            for ssid,password in secrets.NETWORKS:
+                if wlan.isconnected():
+                    break
+                attempts = 0
+                while not wlan.isconnected() and attempts < WLAN_ATTEMPTS_PER_NETWORK:
+                    attempts += 1
+                    sendFoosOBSPlusScreen(f"Trying {ssid}",foosOBSLines)
+                    wlan.connect(ssid,password)
+                    blink(3,.25)
+                    #Poll status instead of a flat sleep: bails out early on a definitive failure
+                    #(wrong password/no AP found/connect fail) so a dead network in the list doesn't
+                    #eat the same fixed wait every pass, but keeps waiting (up to the timeout) for a
+                    #real network that's just being slow to associate.
+                    deadline = time.ticks_add(time.ticks_ms(),int(WLAN_CONNECT_TIMEOUT * 1000))
+                    while time.ticks_diff(deadline,time.ticks_ms()) > 0:
+                        if wdt: wdt.feed()
+                        if wlan.isconnected() or wlan.status() in WLAN_FAIL_STATUSES:
+                            break
+                        time.sleep(WLAN_POLL_INTERVAL)
+                    if not wlan.isconnected():
+                        status = wlan.status()
+                        debug(f"{ssid}: connect failed (status={WLAN_STATUS_NAMES.get(status,status)})",level="WARNING")
+    return wlan.isconnected()
+
+if not connectWifi():
     forceStandAloneMode = True
 
 teamsLEDRanges = []
@@ -1106,21 +1149,16 @@ led_strip = LEDStrip(LEDSTRIP,NUMBER_PIXELS,STATE_MACHINE,"GRB")
 led_strip.all_ranges = allLEDs
 teamColors = ['Yellow','Black ']
 
-if forceStandAloneMode:
-    led_strip.send_command("solid",allLEDs,1,red)
-    blink(4,.25)
-    foosOBSLines = sendFoosOBSPlusScreen('Unable to connect to host',foosOBSLines)
-    debug('forcing standalonemode',level="WARNING")
-    isFoosOBSMode = False
-    isTestMode = False
-    isStandAloneMode = True
-    isMenuOn = False
-else:
-    led_strip.send_command("solid",allLEDs,1,softyellow)
-    blink(2,.25)
+def bindSockets():
+    #Binds/listens the TCP command socket and the UDP discovery socket once wlan is connected,
+    #setting host/s/udp for the rest of the program to use. Shared by the boot-time connect and
+    #by FoosOBS+Mode's on-demand reconnect from the menu, since both need the exact same setup
+    #once a connection exists. A bind failure aborts the whole program either way - it means the
+    #port's already in use, not something a menu retry can fix.
+    global host,s,udp
     host = wlan.ifconfig()[0]
-    foosOBSLines = sendFoosOBSPlusScreen('Connected. Host:',foosOBSLines)
-    foosOBSLines = sendFoosOBSPlusScreen(host,foosOBSLines)
+    sendFoosOBSPlusScreen('Connected. Host:',foosOBSLines)
+    sendFoosOBSPlusScreen(host,foosOBSLines)
     s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
     try:
@@ -1130,15 +1168,30 @@ else:
         try:
             s.bind((host,port))
         except:
-            foosOBSLines = sendFoosOBSPlusScreen('Could not bind  ',foosOBSLines)
-            foosOBSLines = sendFoosOBSPlusScreen('aborting........',foosOBSLines)
+            sendFoosOBSPlusScreen('Could not bind  ',foosOBSLines)
+            sendFoosOBSPlusScreen('aborting........',foosOBSLines)
             led_strip.send_command("solid",allLEDs,1,red)
             sys.exit(1)
-    foosOBSLines = sendFoosOBSPlusScreen(f"Socket {port} bound.",foosOBSLines)
+    sendFoosOBSPlusScreen(f"Socket {port} bound.",foosOBSLines)
     s.listen(4)
     udp = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     udp.bind(('0.0.0.0',DPORT))
     udp.settimeout(0.1)
+
+if forceStandAloneMode:
+    led_strip.send_command("solid",allLEDs,1,red)
+    blink(4,.25)
+    sendFoosOBSPlusScreen('Unable to connect to host',foosOBSLines)
+    debug('forcing standalonemode',level="WARNING")
+    isFoosOBSMode = False
+    isTestMode = False
+    isStandAloneMode = True
+    isMenuOn = False
+    updateScoreScreen()
+else:
+    led_strip.send_command("solid",allLEDs,1,softyellow)
+    blink(2,.25)
+    bindSockets()
 
 led_strip.send_command("solid",allLEDs,1,softgreen)
 blink(2,.15)

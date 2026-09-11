@@ -3,6 +3,12 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.13 09/10/2026
+- Fix going into standalone mode after failing to connect to network.  Make FoosOBS+Mode attempt to connect to network if not already connected.
+
+## v3.12 09/10/2026
+- Fix issue with watchdog timer interfering with wi-fi captive portal and add way to abort captive portal by using action button.
+
 ## v3.11 09/10/2026
 - Add a "Wi-Fi Setup" menu item so a customer's network can be configured from
   a phone instead of over USB. Selecting it (new `wifi_setup.py`, ported from
