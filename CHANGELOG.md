@@ -3,6 +3,9 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.15 09/11/2026
+- Rearranged Menus
+
 ## v3.14 09/10/2026
 - Add Network Menu with Connect/Disconnect options.
 

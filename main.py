@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.14 09/10/2026
+#v3.15 09/11/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -108,6 +108,8 @@ SHOWHOST_LEVEL = 6  #menuLevel for the Show Host screen - handleMenuAction() spe
                      #lines, not just the last one (see the comment at the top of handleMenuAction).
 SHOWMAC_LEVEL = 7   #menuLevel for the Show MAC screen - see SHOWHOST_LEVEL above
 NETWORK_LEVEL = 8   #menuLevel for the Network submenu (Connect/Disconnect/Wi-Fi Setup)
+MODE_LEVEL = 9       #menuLevel for the Mode submenu (StandAlone Mode/FoosOBS+Mode)
+DIAGNOSTICS_LEVEL = 10  #menuLevel for the Diagnostics submenu (Test Inputs/Test LEDs)
 #[connect count, host, port] for the Show Host screen - refreshed each time that screen is
 #entered (see the "Show Host" branch in handleMenuAction); getMenuItems() is called from
 #startup before wlan/host/clients exist, so those can't be read inline here.
@@ -116,15 +118,17 @@ showHostLines = ["","",""]
 showMacLines = ["","",""]
 
 def getMenuItems():
-    return [["Network","StandAlone Mode","FoosOBS+Mode","Adjust","New Match","Reset All","Test Inputs","Test LEDs","Settings","Exit Menu","End Program"],
-            [f"Points To Win  {pointsToWin}",f"Games To Win  {gamesToWin}",f"Balls In Rack  {ballsInRack}",f"RackTour Mode {rtMode}","Exit Settings"],
+    return [["Exit Menu","New Match","Adjust","Mode","Network","Settings","Diagnostics","End Program"],
+            [f"Points To Win  {pointsToWin}",f"Games To Win  {gamesToWin}",f"Balls In Rack  {ballsInRack}",f"RackTour Mode {rtMode}","Reset All","Exit Settings"],
             [f"Team 1 Score  {teamScore[TEAM1]}",f"Team 2 Score  {teamScore[TEAM2]}",f"Team 1 Games  {teamGames[TEAM1]}",f"Team 2 Games  {teamGames[TEAM2]}",f"Team 1 TimeOuts  {teamTO[TEAM1]}",f"Team 2 TimeOuts  {teamTO[TEAM2]}","Exit Adjust"],
             ["Test","Solid","Time Out Team 1","Time Out Team 2","Score Team 1","Score Team 2","Fade","Rainbow Chase","Blink","Set Color","Clear","Exit Test LEDs"],
             ["Red","Green","Yellow","Blue","Orange","Indigo","Violet","Clear","Exit Set Color"],
             ["Show Host","Show MAC","Exit Show Host/MAC"],
             [showHostLines[0],showHostLines[1],showHostLines[2],"Return to Menu"],
             [showMacLines[0],showMacLines[1],showMacLines[2],"Return to Menu"],
-            ["Connect","Disconnect","Show Host/MAC","Wi-Fi Setup","Exit Network"]
+            ["Connect","Disconnect","Show Host/MAC","Wi-Fi Setup","Exit Network"],
+            ["StandAlone Mode","FoosOBS+Mode","Exit Mode"],
+            ["Test Inputs","Test LEDs","Exit Diagnostics"]
             ]
 
 def resetAll():
@@ -678,8 +682,10 @@ def handleMenuAction(action,obs_lines):
         changeValueMode = not changeValueMode
     elif action[:4] == "Exit":
         if menuLevel == HOSTMAC_LEVEL:
-            menuLevel = NETWORK_LEVEL  #nested under Network now, not the main menu
-        elif menuLevel == 2 or menuLevel == 3 or menuLevel == NETWORK_LEVEL:
+            menuLevel = NETWORK_LEVEL  #nested under Network, not the main menu
+        elif menuLevel == 3:
+            menuLevel = DIAGNOSTICS_LEVEL  #nested under Diagnostics, not the main menu
+        elif menuLevel == 2 or menuLevel == NETWORK_LEVEL or menuLevel == MODE_LEVEL or menuLevel == DIAGNOSTICS_LEVEL:
             menuLevel = 0
         else:
             menuLevel -= 1
@@ -793,6 +799,14 @@ def handleMenuAction(action,obs_lines):
         mainMenu()
     elif action == "Network":
         menuLevel = NETWORK_LEVEL
+        menuPtr = 0
+        mainMenu()
+    elif action == "Mode":
+        menuLevel = MODE_LEVEL
+        menuPtr = 0
+        mainMenu()
+    elif action == "Diagnostics":
+        menuLevel = DIAGNOSTICS_LEVEL
         menuPtr = 0
         mainMenu()
     elif action == "Connect":
