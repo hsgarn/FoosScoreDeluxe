@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.11 09/10/2026
+#v3.12 09/10/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -640,7 +640,7 @@ def incrementValue():
     _update_value(1)
 
 def handleMenuAction(action,obs_lines):
-    global menuLevel,cursorLineI2CLCD,menuPtr,isMenuOn,isFoosOBSMode,isStandAloneMode,isTestMode,keepRunning,changeValueMode,currentPageI2CLCD
+    global menuLevel,cursorLineI2CLCD,menuPtr,isMenuOn,isFoosOBSMode,isStandAloneMode,isTestMode,keepRunning,changeValueMode,currentPageI2CLCD,forceStandAloneMode
     #The Show Host and Show MAC screens are read-only info, not a set of distinct actions like
     #every other menu level - Action should return to the Show Host/MAC submenu no matter which
     #of its 4 lines the cursor happens to be on, so this is checked by level before the usual
@@ -757,13 +757,26 @@ def handleMenuAction(action,obs_lines):
         #machine.reset()) - standalone/FoosOBS+ mode resume normally on the reboot that
         #follows. Unlike the base FoosScorePlus project, this is never entered automatically
         #on a failed connection - a table that's intentionally offline stays in standalone
-        #mode, exactly as it does today.
+        #mode, exactly as it does today. Pressing Action instead cancels back out here (see
+        #wifi_setup.py) without a submit/reset - station mode is left active but not
+        #reconnected (this menu can be reached even while already connected, and switching to
+        #AP mode to run the portal already dropped that connection the moment it started), so
+        #forceStandAloneMode is set the same as if every network in the list had failed,
+        #rather than leaving other code trusting a connection that's actually gone. Re-running
+        #Wi-Fi Setup or rebooting are both still available from here to reconnect for real.
         debug("Wi-Fi Setup selected",level="INFO")
         isMenuOn = False
         currentPageI2CLCD = -1
         i2cLCD1.clear()
         import wifi_setup
-        wifi_setup.run_captive_portal(wlan,secrets.NETWORKS,team1LED,team2LED,on_ready=showWifiSetupScreen)
+        wifi_setup.run_captive_portal(wlan,secrets.NETWORKS,team1LED,team2LED,on_ready=showWifiSetupScreen,wdt=wdt,
+                                       action_pressed=lambda: pushbuttons[ACTION_PB_IDX].value() == onPBState)
+        debug("Wi-Fi Setup cancelled",level="INFO")
+        forceStandAloneMode = True
+        menuLevel = 0
+        menuPtr = 0
+        currentPageI2CLCD = -1
+        mainMenu()
     elif action == "Show Host":
         showHostLines[0] = f"{len(clients)} Client(s)" if clients else "No Client Connected"
         showHostLines[1] = host if (not forceStandAloneMode and wlan.isconnected()) else "No IP Address"

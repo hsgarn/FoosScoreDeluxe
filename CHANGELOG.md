@@ -4,24 +4,85 @@ All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
 ## v3.11 09/10/2026
-Add a "Wi-Fi Setup" menu item so a customer's network can be configured from
-a phone instead of over USB. Selecting it (new `wifi_setup.py`, ported from
-FoosScorePlus) opens an open access point (`FoosScoreSetup-<MAC suffix>` -
-no table number, since the MAC suffix alone is already unique per board),
-spoofs DNS so a joining phone's captive-portal prompt fires automatically,
-and shows the AP name and setup URL right on the I2C LCD (this board has a
-display, so unlike the base project's fixed-IP fallback, the customer just
-reads it off the screen) - the SSID still runs a few characters past one
-20-char LCD line, so `showWifiSetupScreen()` wraps it across the display's
-two middle lines instead of truncating it, since a customer needs the exact
-full name to find and join it. Submitting a network in the resulting form
-writes it to `secrets.py` and reboots. Unlike FoosScorePlus, this does
-**not** run automatically when no network connects - this project already
-has a fully-supported `StandAlone Mode` for tables that intentionally run
-without Wi-Fi, so an unconfigured/unreachable network still falls back to
-that as before; the portal only opens when explicitly selected from the menu.
-The two team LEDs (`team1LED`/`team2LED`) alternate every half second while
-the portal waits, reusing the same GPIOs already wired for them.
+- Add a "Wi-Fi Setup" menu item so a customer's network can be configured from
+  a phone instead of over USB. Selecting it (new `wifi_setup.py`, ported from
+  FoosScorePlus) opens an open access point (`FoosScoreSetup-<MAC suffix>` -
+  no table number, since the MAC suffix alone is already unique per board),
+  spoofs DNS so a joining phone's captive-portal prompt fires automatically,
+  and shows the AP name and setup URL right on the I2C LCD (this board has a
+  display, so unlike the base project's fixed-IP fallback, the customer just
+  reads it off the screen) - the SSID still runs a few characters past one
+  20-char LCD line, so `showWifiSetupScreen()` wraps it across the display's
+  two middle lines instead of truncating it, since a customer needs the exact
+  full name to find and join it. Submitting a network in the resulting form
+  writes it to `secrets.py` and reboots. Unlike FoosScorePlus, this does
+  **not** run automatically when no network connects - this project already
+  has a fully-supported `StandAlone Mode` for tables that intentionally run
+  without Wi-Fi, so an unconfigured/unreachable network still falls back to
+  that as before; the portal only opens when explicitly selected from the menu.
+  The two team LEDs (`team1LED`/`team2LED`) alternate every half second while
+  the portal waits, reusing the same GPIOs already wired for them.
+- Fix two WDT trips in the Wi-Fi Setup portal, both showing as a reset right
+  after the setup screen appeared:
+  - `run_captive_portal()`'s own `while True` loop (waiting on the DNS/HTTP
+    sockets and toggling the team LEDs) never fed the watchdog. Added an
+    optional `wdt` parameter, fed once per loop iteration same as everywhere
+    else that blocks for a while (see `sleepFeedWdt()`); `main.py` passes its
+    `wdt` global through.
+  - The nearby-SSID `wlan_sta.scan()` used to pre-fill the setup form's SSID
+    dropdown is an unbounded blocking call that can run past the RP2040
+    WDT's ~8.3s hard ceiling in an RF-dense area (many networks/BSSIDs to
+    enumerate, e.g. a mesh system's multiple nodes) - the same category of
+    slow Wi-Fi operation the startup connect sequence is deliberately run
+    *before* the watchdog is armed to avoid (see the `wdt` comment near the
+    top of `main.py`), except this runs from the menu after the watchdog is
+    already armed, with no way to feed it mid-call. Removed the scan; the
+    SSID field still accepts typing a network name by hand.
+  - Removing the scan alone wasn't enough - the STA->AP radio mode switch
+    (`wlan_sta.active(False)` / `ap.active(True)`) is itself slow enough on
+    the cyw43 chip that the setup sequence's *cumulative* time between the
+    one feed on entry and the next one at the top of the `while True` loop
+    could still add up past the ~8.3s ceiling, confirmed by the trip going
+    away entirely with `WDT_ENABLED = 0`. Added `wdt.feed()` calls between
+    each step of that sequence (interface toggle, `ap.config()`, the
+    `on_ready` LCD callback, socket setup) instead of just once at the top.
+- Fix `secrets.py` being required at all: `import secrets` at module load
+  used to crash the whole program if the file didn't exist yet (e.g. a fresh
+  board with no Wi-Fi configured at all). Wrapped it in the same
+  try/except-and-fall-back-to-a-stub pattern already used for `secretsIref`
+  and `ssl`, so a missing `secrets.py` now just means `secrets.NETWORKS` is
+  empty - the connect loop has nothing to try and falls straight through to
+  standalone mode, same as every listed network failing. The "Wi-Fi Setup"
+  menu item still works normally to create a real one.
+- Increase `WLAN_CONNECT_TIMEOUT` from 8s to 20s and log each failed
+  connect's `wlan.status()` by name (`STAT_WRONG_PASSWORD`,
+  `STAT_NO_AP_FOUND`, etc, via a new `WLAN_STATUS_NAMES` reverse lookup)
+  instead of failing silently. A mesh network's extra roaming/backhaul
+  negotiation can leave a `connect()` attempt sitting in `STAT_CONNECTING`
+  well past a single AP's usual 8s without ever reaching a definitive failure
+  status, so the old timeout was bailing out on networks that just needed
+  more time; the early-bailout on an actual failure status is unaffected.
+- Let the menu's Action button (PB3) cancel out of the Wi-Fi Setup portal
+  instead of it being a one-way trip until a network is submitted (or the
+  watchdog resets the board). First attempt routed this through the normal
+  IRQ/event-queue path (`EVENT_ACTION`), but that path's debounce is only
+  cleared by `serviceDebounce()`, which runs once per *main-loop* iteration -
+  exactly what's paused while `run_captive_portal()` blocks in its own loop.
+  The very first press (the one that selected "Wi-Fi Setup") latches that
+  debounce flag and it's never cleared again, so a second press was silently
+  swallowed by the IRQ handler itself before it could even reach the queue -
+  the button appeared completely unresponsive. Replaced it with a new
+  `action_pressed` callable passed into `run_captive_portal()` that polls the
+  Action pin's raw value directly once per loop iteration (edge-detected
+  against a baseline read at entry, so a press already in progress at entry
+  isn't mistaken for a new one) - bypassing the shared debounce state
+  entirely. On a cancel, it tears down its DNS/HTTP sockets and AP and
+  reactivates station mode before returning normally; `main.py` sets
+  `forceStandAloneMode = True` on that return, since entering Wi-Fi Setup at
+  all (reachable even while already connected) already disrupted any
+  existing connection the moment it switched to AP mode - there's no attempt
+  to reconnect automatically; re-running Wi-Fi Setup or rebooting are both
+  still available from the menu it returns to.
 
 ## v3.10 08/17/2026
 Fix LASER-sensor tables registering extra goals: unlike IR break-beam sensors, which sit

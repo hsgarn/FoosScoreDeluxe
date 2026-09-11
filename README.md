@@ -156,7 +156,9 @@ and reached from the main menu's "Wi-Fi Setup" item:
    base project, this board has a display, so there's no need to memorize a
    fixed IP ahead of time.
 3. Opening that prompt (or browsing to the address shown) shows a one-field
-   setup page, pre-filled with a dropdown of nearby SSIDs found during a scan.
+   setup page - type in the network name and password (no nearby-network
+   scan/dropdown, since that's an unbounded call that risks tripping the
+   watchdog in an RF-dense area; see the comment in `wifi_setup.py`).
 4. Submitting a network name and password writes it into `secrets.py` (added
    to, not replacing, any networks already listed there) and reboots the
    board.

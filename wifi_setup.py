@@ -10,7 +10,20 @@
 #numbers) so a caller with other uses for those GPIOs can hand over Pin
 #instances it already owns instead of this module creating its own. An
 #optional on_ready(ssid, ip) callback lets the caller show the setup AP's
-#name/address on its own display once the AP is up.
+#name/address on its own display once the AP is up. An optional wdt (a
+#machine.WDT, or None if the caller runs without one) is fed once per loop
+#iteration - this function blocks in its own loop until a network is
+#submitted, easily past a watchdog's timeout otherwise.
+#An optional action_pressed() (a zero-arg callable returning True while the menu's Action
+#button, PB3, is physically held down) lets that button cancel back out to the caller without
+#submitting anything. This polls the raw pin instead of going through main.py's usual
+#IRQ/event-queue path deliberately: that path's own debounce only gets cleared by
+#serviceDebounce(), which runs once per main-loop iteration - and the main loop is exactly
+#what's paused while this function blocks in its own loop, so the debounce flag set by the
+#very first press (the one that selected "Wi-Fi Setup") would otherwise never clear, silently
+#swallowing every later press at the IRQ handler itself before it could reach the queue.
+#Returning this way (rather than machine.reset(), used on a successful save) leaves both
+#radios in a disrupted state - see the caller's comment for how it recovers.
 #
 #NOTE: ap.config()'s keyword names (essid vs ssid, security vs authmode) have
 #shifted across MicroPython releases - this targets the v1.28.0 rp2 firmware
@@ -171,34 +184,42 @@ def _handle_http(cl, scanned, existing):
     cl.send(_http_response(_page(scanned)))
 
 
-def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None):
+def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, wdt=None, action_pressed=None):
     print("No known Wi-Fi network reachable - starting setup access point.")
 
+    #No nearby-SSID scan here (the setup form's dropdown is just left empty - typing a name
+    #by hand still works fine): wlan_sta.scan() is an unbounded blocking call that can easily
+    #run past the RP2040 WDT's ~8.3s hard ceiling in an RF-dense area (many networks/BSSIDs
+    #to enumerate, e.g. a mesh system's multiple nodes), same as the startup connect sequence
+    #(see the wdt comment near the top of main.py) - the difference is the watchdog is already
+    #armed by the time this runs from the menu, and there's no way to feed it mid-call.
     scanned = []
-    try:
-        for net in wlan_sta.scan():
-            ssid = net[0].decode("utf-8", "ignore")
-            if ssid and ssid not in scanned:
-                scanned.append(ssid)
-    except OSError:
-        pass
     try:
         mac_suffix = "".join("%02x" % b for b in wlan_sta.config("mac"))[-6:]
     except OSError:
         mac_suffix = "000000"
+    if wdt: wdt.feed()
     wlan_sta.active(False)
 
+    #The STA->AP radio mode switch below is itself slow enough on the cyw43 chip to eat a
+    #meaningful chunk of one WDT window on its own - feeding between each step (rather than
+    #once at the top and again only once the while loop starts) keeps any one step's own
+    #delay from stacking on top of the others' and adding up past the ~8.3s ceiling.
+    if wdt: wdt.feed()
     ap = network.WLAN(network.AP_IF)
     ap.active(True)
+    if wdt: wdt.feed()
     ap.ifconfig((AP_IP, "255.255.255.0", AP_IP, AP_IP))
     ssid = "FoosScoreSetup-%s" % mac_suffix
     try:
         ap.config(essid=ssid, security=0)  #security=0 -> open network, no password needed to join setup AP
     except (ValueError, TypeError, OSError):
         ap.config(essid=ssid)
+    if wdt: wdt.feed()
     print('Setup AP "%s" is up - connect a phone to it, then browse to http://%s/ if a setup page does not open automatically.' % (ssid, AP_IP))
     if on_ready:
         on_ready(ssid, AP_IP)
+    if wdt: wdt.feed()
 
     dns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -208,6 +229,7 @@ def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None):
     http.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     http.bind(("0.0.0.0", 80))
     http.listen(4)
+    if wdt: wdt.feed()
 
     ip_bytes = bytes(int(x) for x in AP_IP.split("."))
 
@@ -217,7 +239,18 @@ def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None):
     led2.value(0)
     lastToggle = time.ticks_ms()
 
+    #Baseline read (rather than assuming not-pressed) so a still-held button at entry - e.g.
+    #the very press that selected "Wi-Fi Setup" hasn't been released yet - isn't mistaken for
+    #a fresh press; only a later release-then-press edge cancels.
+    wasPressed = action_pressed() if action_pressed else False
+
     while True:
+        if wdt: wdt.feed()
+        if action_pressed:
+            pressed = action_pressed()
+            if pressed and not wasPressed:
+                break
+            wasPressed = pressed
         readable, _, _ = select.select([dns, http], [], [], 0.1)
         for r in readable:
             if r is dns:
@@ -239,3 +272,16 @@ def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None):
             led1.value(not led1.value())
             led2.value(not led2.value())
             lastToggle = time.ticks_ms()
+
+    #Cancelled via the Action button - only reached by that break above, since a successful
+    #save resets the board directly from _handle_http() instead of returning here. Tear down
+    #the AP/DNS/HTTP state this function created; the caller is responsible for whatever
+    #station-mode reconnect makes sense for it (this module doesn't know the caller's network
+    #list or connect-retry logic).
+    print("Wi-Fi Setup cancelled - Action button pressed.")
+    dns.close()
+    http.close()
+    ap.active(False)
+    led1.value(0)
+    led2.value(0)
+    wlan_sta.active(True)
