@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.13 09/10/2026
+#v3.14 09/10/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -107,6 +107,7 @@ SHOWHOST_LEVEL = 6  #menuLevel for the Show Host screen - handleMenuAction() spe
                      #and SHOWMAC_LEVEL so Action returns to HOSTMAC_LEVEL from any of their
                      #lines, not just the last one (see the comment at the top of handleMenuAction).
 SHOWMAC_LEVEL = 7   #menuLevel for the Show MAC screen - see SHOWHOST_LEVEL above
+NETWORK_LEVEL = 8   #menuLevel for the Network submenu (Connect/Disconnect/Wi-Fi Setup)
 #[connect count, host, port] for the Show Host screen - refreshed each time that screen is
 #entered (see the "Show Host" branch in handleMenuAction); getMenuItems() is called from
 #startup before wlan/host/clients exist, so those can't be read inline here.
@@ -115,14 +116,15 @@ showHostLines = ["","",""]
 showMacLines = ["","",""]
 
 def getMenuItems():
-    return [["Show Host/MAC","Wi-Fi Setup","StandAlone Mode","FoosOBS+Mode","Adjust","New Match","Reset All","Test Inputs","Test LEDs","Settings","Exit Menu","End Program"],
+    return [["Network","StandAlone Mode","FoosOBS+Mode","Adjust","New Match","Reset All","Test Inputs","Test LEDs","Settings","Exit Menu","End Program"],
             [f"Points To Win  {pointsToWin}",f"Games To Win  {gamesToWin}",f"Balls In Rack  {ballsInRack}",f"RackTour Mode {rtMode}","Exit Settings"],
             [f"Team 1 Score  {teamScore[TEAM1]}",f"Team 2 Score  {teamScore[TEAM2]}",f"Team 1 Games  {teamGames[TEAM1]}",f"Team 2 Games  {teamGames[TEAM2]}",f"Team 1 TimeOuts  {teamTO[TEAM1]}",f"Team 2 TimeOuts  {teamTO[TEAM2]}","Exit Adjust"],
             ["Test","Solid","Time Out Team 1","Time Out Team 2","Score Team 1","Score Team 2","Fade","Rainbow Chase","Blink","Set Color","Clear","Exit Test LEDs"],
             ["Red","Green","Yellow","Blue","Orange","Indigo","Violet","Clear","Exit Set Color"],
             ["Show Host","Show MAC","Exit Show Host/MAC"],
             [showHostLines[0],showHostLines[1],showHostLines[2],"Return to Menu"],
-            [showMacLines[0],showMacLines[1],showMacLines[2],"Return to Menu"]
+            [showMacLines[0],showMacLines[1],showMacLines[2],"Return to Menu"],
+            ["Connect","Disconnect","Show Host/MAC","Wi-Fi Setup","Exit Network"]
             ]
 
 def resetAll():
@@ -639,27 +641,29 @@ def decrementValue():
 def incrementValue():
     _update_value(1)
 
-def tryConnectFoosOBS():
-    #Called when FoosOBS+Mode is selected from the menu while the table is offline
-    #(forceStandAloneMode True, from a failed boot-time connect or a cancelled Wi-Fi Setup).
-    #Gives the network one more try instead of requiring a reboot to get out of standalone mode -
-    #same connect+socket-setup path as boot, just triggered on demand. Returns whether the
-    #caller should actually enter FoosOBS+Mode or fall back to the menu.
+def attemptReconnect():
+    #Called from the menu (Network > Connect, or FoosOBS+Mode selected while offline) to give
+    #the network one more try instead of requiring a reboot to get out of standalone mode - same
+    #connect+socket-setup path as boot, just triggered on demand. Returns whether it connected.
     global forceStandAloneMode
     if connectWifi():
         forceStandAloneMode = False
         led_strip.send_command("solid",allLEDs,1,softyellow)
         blink(2,.25)
         bindSockets()
+        sleepFeedWdt(5)
+        clearLEDStrip()
         return True
     led_strip.send_command("solid",allLEDs,1,red)
     blink(4,.25)
     sendFoosOBSPlusScreen('Unable to connect to host',foosOBSLines)
-    debug('FoosOBS+Mode reconnect failed - staying in standalone mode',level="WARNING")
+    debug('Network reconnect failed - staying in standalone mode',level="WARNING")
+    sleepFeedWdt(5)
+    clearLEDStrip()
     return False
 
 def handleMenuAction(action,obs_lines):
-    global menuLevel,cursorLineI2CLCD,menuPtr,isMenuOn,isFoosOBSMode,isStandAloneMode,isTestMode,keepRunning,changeValueMode,currentPageI2CLCD,forceStandAloneMode
+    global menuLevel,cursorLineI2CLCD,menuPtr,isMenuOn,isFoosOBSMode,isStandAloneMode,isTestMode,keepRunning,changeValueMode,currentPageI2CLCD,forceStandAloneMode,clients,listenCount
     #The Show Host and Show MAC screens are read-only info, not a set of distinct actions like
     #every other menu level - Action should return to the Show Host/MAC submenu no matter which
     #of its 4 lines the cursor happens to be on, so this is checked by level before the usual
@@ -673,7 +677,9 @@ def handleMenuAction(action,obs_lines):
     if any(action.startswith(prefix) for prefix in toggleActions):
         changeValueMode = not changeValueMode
     elif action[:4] == "Exit":
-        if menuLevel == 2 or menuLevel == 3 or menuLevel == HOSTMAC_LEVEL:
+        if menuLevel == HOSTMAC_LEVEL:
+            menuLevel = NETWORK_LEVEL  #nested under Network now, not the main menu
+        elif menuLevel == 2 or menuLevel == 3 or menuLevel == NETWORK_LEVEL:
             menuLevel = 0
         else:
             menuLevel -= 1
@@ -754,8 +760,8 @@ def handleMenuAction(action,obs_lines):
         enterMode = True
         resetBuffer = True
         if forceStandAloneMode:
-            enterMode = tryConnectFoosOBS()
-            resetBuffer = False  #tryConnectFoosOBS() already left a status message on screen
+            enterMode = attemptReconnect()
+            resetBuffer = False  #attemptReconnect() already left a status message on screen
                                  #(connected-host info on success, "Unable to connect" on
                                  #failure) - don't clobber it with a blank reset before showing
                                  #the "Enabled" line below.
@@ -785,6 +791,50 @@ def handleMenuAction(action,obs_lines):
         menuLevel = HOSTMAC_LEVEL
         menuPtr = 0
         mainMenu()
+    elif action == "Network":
+        menuLevel = NETWORK_LEVEL
+        menuPtr = 0
+        mainMenu()
+    elif action == "Connect":
+        if forceStandAloneMode:
+            debug("Connect selected",level="INFO")
+            attemptReconnect()
+        else:
+            sendFoosOBSPlusScreen("Already Connected",foosOBSLines)
+        menuPtr = 0
+        mainMenu()
+    elif action == "Disconnect":
+        if forceStandAloneMode:
+            sendFoosOBSPlusScreen("Not Connected",foosOBSLines)
+        else:
+            debug("Disconnect selected",level="INFO")
+            for client in clients:
+                try:
+                    client["sock"].close()
+                except:
+                    pass
+            clients = []
+            try:
+                s.close()
+            except:
+                pass
+            try:
+                udp.close()
+            except:
+                pass
+            wlan.disconnect()
+            forceStandAloneMode = True
+            listenCount = 0
+            if isFoosOBSMode:
+                isFoosOBSMode = False
+                isStandAloneMode = True
+            led_strip.send_command("solid",allLEDs,1,red)
+            blink(2,.25)
+            sendFoosOBSPlusScreen("Disconnected",foosOBSLines)
+            sleepFeedWdt(5)
+            clearLEDStrip()
+        menuPtr = 0
+        mainMenu()
     elif action == "Wi-Fi Setup":
         #Blocks until the customer submits new credentials (saved to secrets.py, then
         #machine.reset()) - standalone/FoosOBS+ mode resume normally on the reboot that
@@ -806,7 +856,7 @@ def handleMenuAction(action,obs_lines):
                                        action_pressed=lambda: pushbuttons[ACTION_PB_IDX].value() == onPBState)
         debug("Wi-Fi Setup cancelled",level="INFO")
         forceStandAloneMode = True
-        menuLevel = 0
+        menuLevel = NETWORK_LEVEL
         menuPtr = 0
         currentPageI2CLCD = -1
         mainMenu()

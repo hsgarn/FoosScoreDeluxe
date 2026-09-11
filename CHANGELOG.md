@@ -3,6 +3,9 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.14 09/10/2026
+- Add Network Menu with Connect/Disconnect options.
+
 ## v3.13 09/10/2026
 - Fix going into standalone mode after failing to connect to network.  Make FoosOBS+Mode attempt to connect to network if not already connected.
 
