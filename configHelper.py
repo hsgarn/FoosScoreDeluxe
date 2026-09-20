@@ -4,6 +4,8 @@
 #Shared by main.py's boot-time validation, the TCP "save" command (parseSave), and
 #configweb.py's on-device config editor, so all three paths agree on what's valid and how
 #a value round-trips to/from config.py's text.
+import logHelper
+
 CONFIGFILE = "config.py"
 
 #Base networking/sensor fields (FoosScorePlus) + integrated-board display/LED-strip/Action-button
@@ -24,6 +26,7 @@ OPTIONALCONFIGTESTS = ["INT","PIN","PIN","PIN","PIN","PIN","INT"]
 
 VALIDPINS = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,26,27,28]
 VALIDTYPES = ["IR","LASER"]
+VALIDLOGLEVELS = ["off","info","debug"]
 
 def readConfigFile():
     config = ""
@@ -66,6 +69,8 @@ def validateValue(raw,kind):
         return (False,None)
     elif kind == "TYPE":
         return (raw in VALIDTYPES,raw)
+    elif kind == "LOGLEVEL":
+        return (raw in VALIDLOGLEVELS,raw)
     elif kind == "INT":
         if raw.isdigit():
             n = int(raw)
@@ -183,10 +188,12 @@ def parseSave(cmd):
                             print("Old config backed up as " + CONFIGFILE + dateStamp + ".")
                             print("writing config...")
                             writeConfigFile(config,CONFIGFILE)
+                            logHelper.log("Config saved via TCP save command; old version backed up as " + CONFIGFILE + dateStamp + ".")
                     else:
                         print("No dateStamp found - write aborted.")
                 else:
                     print("Invalid config - write aborted.")
+                    logHelper.log("TCP save command: invalid config - write aborted.")
             elif t[0:4] == "date":
                 dateStamp = t[7:21]
             else:

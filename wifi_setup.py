@@ -47,6 +47,7 @@ import socket
 import select
 import time
 import machine
+import logHelper
 
 AP_IP = "192.168.4.1"
 SECRETSFILE = "secrets.py"
@@ -208,6 +209,7 @@ def _handle_http(cl, scanned, existing, existing_admin_password=""):
         admin_password = fields.get("admin_password", "").strip() or existing_admin_password
         if ssid:
             save_network(ssid, password, existing, admin_password)
+            logHelper.log("Wi-Fi network '" + ssid + "' saved via Wi-Fi Setup portal.")
             cl.send(http_response(_success_page(ssid)))
             cl.close()
             time.sleep(1)  #let the response reach the phone before the reset drops the AP
@@ -266,6 +268,7 @@ def open_dns_http():
 
 def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, wdt=None, action_pressed=None, existing_admin_password=""):
     print("No known Wi-Fi network reachable - starting setup access point.")
+    logHelper.log("Wi-Fi Setup: starting access point.")
 
     #No nearby-SSID scan here (the setup form's dropdown is just left empty - typing a name
     #by hand still works fine): wlan_sta.scan() is an unbounded blocking call that can easily
@@ -315,8 +318,8 @@ def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, w
                 cl, _addr = http.accept()
                 try:
                     _handle_http(cl, scanned, existing_networks, existing_admin_password)
-                except OSError:
-                    pass
+                except OSError as ex:
+                    logHelper.log("Wi-Fi Setup: request error: " + str(ex))
                 finally:
                     cl.close()
 

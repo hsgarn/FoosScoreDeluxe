@@ -3,6 +3,18 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.17 09/20/2026
+- Add file-backed logging (logHelper.py), ported from FoosScorePlus - `LOGLEVEL`
+  (`"off"`/`"info"`/`"debug"`) and `LOG_MAX_KB` in config.py control what, if anything,
+  gets written to log.txt (single-backup rotation once the size cap is crossed),
+  completely independent of DEBUGMODE/terminal logging. debug() (debuglog.py) now also
+  feeds the file logger using its existing level argument (DEBUG->"debug",
+  INFO/WARNING/ERROR->"info") rather than duplicating a parallel call at every one of its
+  ~30 existing call sites - verified this doesn't change terminal output at all. Exposed
+  on the Config Web portal's System page alongside new View Log/Clear Log actions. The TCP
+  "save" command (configHelper.parseSave) also logs its success/failure, so a config push
+  from the desktop app that fails validation shows up in the log too.
+
 ## v3.16 09/20/2026
 - Add Config Web portal (configweb.py), ported from FoosScorePlus - a full config.py
   editor reached via the Settings menu's new "Start Web Config" item (writes a

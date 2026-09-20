@@ -1,7 +1,7 @@
 #FoosScorePlusDeluxe - full config-editing captive portal ("Config Web").
 #Ported from FoosScorePlus's configPortal.py. Entered by rebooting with a "configweb.flag"
 #marker file present (see main.py's boot-time check, right before it validates config.py) -
-#the on-device Settings menu's "Start Config Web" item writes that flag and calls
+#the on-device Settings menu's "Start Web Config" item writes that flag and calls
 #machine.reset() to get there, rather than a dedicated GPIO reset button like FoosScorePlus.
 #Built on top of wifi_setup.py's AP/DNS/HTTP primitives (start_ap/open_dns_http/dns_reply/
 #parse_form/http_response/save_network/remove_network/save_admin_password) instead of
@@ -20,6 +20,7 @@ from machine import Pin, I2C
 import config
 import configHelper
 import wifi_setup
+import logHelper
 
 try:
     import secrets
@@ -97,14 +98,18 @@ IREF_FIELDS = [
 SYSTEM_FIELDS = [
     ("DEBUGMODE","Debug logging","INT",False,[("0","Disabled"),("1","Enabled")]),
     ("WDT_ENABLED","Watchdog timer","INT",False,[("0","Disabled"),("1","Enabled")]),
+    ("LOGLEVEL","File logging level","LOGLEVEL",False,[("off","Off"),("info","Info"),("debug","Debug")]),
+    ("LOG_MAX_KB","Max log file size (KB)","INT",False,None),
 ]
 
+#"/system" is handled separately below (_page_system/_handle_system) rather than through
+#this generic table - it needs the flash-wear note and the View Log/Clear Log buttons a
+#plain field-spec form doesn't have.
 SECTIONS = {
     "/gpio": ("GPIO / Pins",GPIO_FIELDS),
     "/game": ("Game",GAME_FIELDS),
     "/display": ("Display / LED Strip / Network",DISPLAY_FIELDS),
     "/tft": ("SPI TFT (optional)",TFT_FIELDS),
-    "/system": ("System",SYSTEM_FIELDS),
 }
 
 _admin_password = ""
@@ -240,6 +245,21 @@ def _page_iref(message="",form=None):
     return _wrap("iRefFoos",body,message)
 
 
+def _page_system(message="",form=None):
+    body = ('<form method="POST" action="/system">'
+            + _render_fields(SYSTEM_FIELDS,form)
+            + '<p style="font-size:.85em;color:#555">Writing to a log file uses the same '
+              'flash the table\'s program runs from, which has a limited number of write '
+              'cycles - leaving file logging on Debug for long stretches may shorten the '
+              'flash\'s usable life. Off/Info are far lower volume and fine to leave on.</p>'
+            + '<button type="submit">Save</button></form>'
+            + '<h3>Log file</h3>'
+              '<a class="back" href="/system/log">View Log</a>'
+              '<form method="POST" action="/system/log/clear"><button type="submit">Clear Log</button></form>'
+            + '<a class="back" href="/">Back to menu</a>')
+    return _wrap("System",body,message)
+
+
 def _finish_page():
     return """<!DOCTYPE html><html><head><title>FoosScore Config</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"></head>
@@ -321,6 +341,7 @@ def _handle_create_password(method,path,form,client_ip):
         _admin_password = pw
         wifi_setup.save_admin_password(_networks(),pw)
         _authenticated_ips.add(client_ip)
+        logHelper.log("Config Web: admin password created (" + client_ip + ").")
         return _page_menu("Admin password created.")
     return _page_create_password()
 
@@ -330,7 +351,9 @@ def _handle_login(method,path,form,client_ip):
         pw = form.get("password","")
         if pw == _admin_password:
             _authenticated_ips.add(client_ip)
+            logHelper.log("Config Web: admin logged in (" + client_ip + ").")
             return _page_menu()
+        logHelper.log("Config Web: incorrect password attempt (" + client_ip + ").")
         return _page_login("Incorrect password.")
     return _page_login()
 
@@ -349,9 +372,23 @@ def _handle_iref(method,form):
             f.write("#Leave empty to disable iRefFoos reporting even when IREF = 1 in config.py.\n")
             f.write("APIKEY = %r\n" % apiKey)
         _iref_api_key = apiKey
+        logHelper.log("iRefFoos API key changed via Config Web.")
     except OSError as ex:
         return _page_iref("Config saved, but could not write secretsIref.py: %s" % ex,form)
     return _page_iref("Saved.")
+
+
+def _handle_system(method,form):
+    if method != "POST":
+        return _page_system()
+    problems = _apply_config_updates(SYSTEM_FIELDS,form)
+    if problems:
+        return _page_system(" ".join(problems),form)
+    logHelper.log("Config section 'System' saved via Config Web.")
+    #Apply a LOGLEVEL/LOG_MAX_KB change immediately within this same session instead of
+    #only after the next reboot - matches FoosScorePlus's configPortal.py.
+    logHelper.configure(getattr(config,"LOGLEVEL","off"),getattr(config,"LOG_MAX_KB",100))
+    return _page_system("Saved.")
 
 
 def _route(method,path,form):
@@ -364,6 +401,7 @@ def _route(method,path,form):
             problems = _apply_config_updates(fields_spec,form)
             if problems:
                 return _page_section_form(path,title,fields_spec," ".join(problems),form)
+            logHelper.log("Config section '" + title + "' saved via Config Web.")
             return _page_section_form(path,title,fields_spec,"Saved.")
         return _page_section_form(path,title,fields_spec)
     if path == "/network":
@@ -374,10 +412,12 @@ def _route(method,path,form):
         if not ssid:
             return _page_network("SSID is required.")
         wifi_setup.save_network(ssid,password,_networks(),_admin_password)
+        logHelper.log("Wi-Fi network '" + ssid + "' saved via Config Web.")
         return _page_network("Network added.")
     if path == "/network/remove" and method == "POST":
         ssid = form.get("ssid","").strip()
         wifi_setup.remove_network(ssid,_networks(),_admin_password)
+        logHelper.log("Wi-Fi network '" + ssid + "' removed via Config Web.")
         return _page_network("Network removed.")
     if path == "/network/password" and method == "POST":
         pw = form.get("password","")
@@ -388,9 +428,15 @@ def _route(method,path,form):
             return _page_network("Passwords do not match.")
         _admin_password = pw
         wifi_setup.save_admin_password(_networks(),pw)
+        logHelper.log("Config Web: admin password changed.")
         return _page_network("Admin password changed.")
     if path == "/iref":
         return _handle_iref(method,form)
+    if path == "/system":
+        return _handle_system(method,form)
+    if path == "/system/log/clear" and method == "POST":
+        logHelper.clearLog()
+        return _page_system("Log cleared.")
     #Unknown path (including captive-portal probe URLs like /generate_204) - fall back to
     #the menu, same "return something other than what the probe expects" idea wifi_setup.py
     #uses to make the OS pop up the captive browser.
@@ -435,6 +481,7 @@ def _handle_http(cl,client_ip):
     form = wifi_setup.parse_form(body.decode()) if method == "POST" else {}
 
     if method == "POST" and path == "/finish":
+        logHelper.log("Config Web: Finish & Restart requested.")
         cl.send(wifi_setup.http_response(_finish_page()))
         cl.close()
         time.sleep(1)  #let the response reach the phone before the reset drops the AP
@@ -445,10 +492,45 @@ def _handle_http(cl,client_ip):
         html = _handle_create_password(method,path,form,client_ip)
     elif client_ip not in _authenticated_ips:
         html = _handle_login(method,path,form,client_ip)
+    elif method == "GET" and path == "/system/log":
+        #Streamed directly to the socket rather than through the normal "build one html
+        #string, then http_response()" path below - log.txt can be up to ~2x LOG_MAX_KB
+        #(current + backup file), and this project has already hit real MemoryError from
+        #big single strings/files on this same RP2040 (see README).
+        _send_log(cl)
+        return True
     else:
         html = _route(method,path,form)
     cl.send(wifi_setup.http_response(html))
     return True
+
+
+_LOG_PAGE_HEAD = ('<!DOCTYPE html><html><head><title>FoosScore Log</title>'
+                   '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                   '<style>body{font-family:sans-serif;margin:1em}'
+                   'a.btn{display:block;text-align:center;padding:.7em;background:#eee;'
+                   'border-radius:.3em;text-decoration:none;color:#000;margin:.3em 0}'
+                   'pre{white-space:pre-wrap;word-break:break-all;font-size:.85em}'
+                   '</style></head><body><a class="btn" href="/system">Back to System</a><pre>').encode()
+_LOG_PAGE_TAIL = '</pre><a class="btn" href="/system">Back to System</a></body></html>'.encode()
+
+
+def _send_log(cl):
+    #Sends its own header and streams logHelper.readLog()'s chunks straight to the socket -
+    #see the comment at this function's call site for why. No Content-Length; "Connection:
+    #close" (used by every response here) tells the browser to read until the socket
+    #closes, same as FoosScorePlus's configPortal._send_log.
+    header = ("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n"
+              "Cache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\n\r\n")
+    cl.send(header.encode())
+    cl.send(_LOG_PAGE_HEAD)
+    empty = True
+    for chunk in logHelper.readLog():
+        empty = False
+        cl.send(chunk)
+    if empty:
+        cl.send(b"(log is empty)")
+    cl.send(_LOG_PAGE_TAIL)
 
 
 def _init_display():
@@ -477,6 +559,7 @@ def _show(lcd,lines):
 def run(wlan_sta,led1,led2,wdt=None):
     global _admin_password,_iref_api_key,_authenticated_ips
     print("configweb.flag present - starting Config Web access point.")
+    logHelper.log("Config Web: starting access point.")
     _admin_password = getattr(secrets,"ADMINPASSWORD","") or ""
     _iref_api_key = getattr(secretsIref,"APIKEY","") if secretsIref else ""
     _authenticated_ips = set()
@@ -509,8 +592,8 @@ def run(wlan_sta,led1,led2,wdt=None):
                 try:
                     if _handle_http(cl,addr[0]):
                         lastActivity = time.ticks_ms()
-                except OSError:
-                    pass
+                except OSError as ex:
+                    logHelper.log("Config Web: request error: " + str(ex))
                 finally:
                     try:
                         cl.close()
@@ -524,6 +607,7 @@ def run(wlan_sta,led1,led2,wdt=None):
 
         if time.ticks_diff(time.ticks_ms(),lastActivity) >= IDLE_TIMEOUT_MS:
             print("Config Web idle timeout - restarting.")
+            logHelper.log("Config Web: idle timeout - restarting.")
             _show(lcd,["Config Web","Idle timeout -","restarting...",""])
             time.sleep(1)
             machine.reset()

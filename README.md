@@ -36,7 +36,8 @@ different from a plain FoosScorePlus board.
 | [main.py](main.py) | The firmware entry point and orchestration: config loading, hardware init, the on-device menu/display, game logic, and the main `select()` loop. Runs on boot, never returns until `keepRunning` is cleared (End Program) or a fatal socket error. |
 | [colors.py](colors.py) | RGB color constants used by the LED strip and menu. |
 | [eventqueue.py](eventqueue.py) | The IRQ-safe sensor/pushbutton event ring buffer. |
-| [debuglog.py](debuglog.py) | The leveled console logger (`debug()`). |
+| [debuglog.py](debuglog.py) | The leveled console logger (`debug()`) - also fans out to [logHelper.py](logHelper.py)'s independent file logger (`DEBUG`->`"debug"`, `INFO`/`WARNING`/`ERROR`->`"info"`), without changing what reaches the terminal. |
+| [logHelper.py](logHelper.py) | File-backed logging to `log.txt` (`LOGLEVEL`/`LOG_MAX_KB` in `config.py`), independent of `DEBUGMODE`/the terminal. Single-backup rotation once the size cap is crossed. Ported from FoosScorePlus. |
 | [netmsg.py](netmsg.py) | TCP message sending (`sendMessage`/`sendScore`/`sendTimeOut`/`sendConfigFile`). |
 | [configHelper.py](configHelper.py) | Config-file read/validate/write logic (`readConfigFile`/`validateConfig`/`setConfigValues`/`parseSave`/...), shared by `main.py`'s boot-time validation, the TCP `save` command, and the Config Web portal. |
 | [ledstrip.py](ledstrip.py) | The `LEDStrip` class - NeoPixel command queue and animation patterns. |
@@ -48,11 +49,13 @@ different from a plain FoosScorePlus board.
 | [secretsIref.py](secretsIref.py) | iRefFoos API key. Optional - only needed if `IREF = 1` in `config.py`. Can also be written by the Config Web portal. |
 | `table.txt` | Written/read at runtime by `main.py`. Holds a remotely assigned table number that overrides `config.TABLE`. Not checked into the repo. |
 | `configweb.flag` | Written by the Settings menu's "Start Web Config" item, read (and removed) at the very top of `main.py`'s next boot to enter the Config Web portal instead of booting normally. Not checked into the repo. |
+| `log.txt`, `log.txt.old` | Written at runtime by [logHelper.py](logHelper.py) when `LOGLEVEL` is not `"off"`. `log.txt.old` is a single rotated backup, replaced whenever `log.txt` would exceed `LOG_MAX_KB`. Not checked into the repo. |
 
-`main.py` imports `colors.py`/`eventqueue.py`/`debuglog.py`/`netmsg.py`/
-`configHelper.py`/`ledstrip.py`/`iref.py` by name at startup, so all seven
-must be copied to the board's filesystem alongside `main.py` and `config.py`
-- a missing one fails as an `ImportError`, not a syntax or memory error.
+`main.py` imports `colors.py`/`eventqueue.py`/`debuglog.py`/`logHelper.py`/
+`netmsg.py`/`configHelper.py`/`ledstrip.py`/`iref.py` by name at startup, so
+all eight must be copied to the board's filesystem alongside `main.py` and
+`config.py` - a missing one fails as an `ImportError`, not a syntax or memory
+error.
 
 ## Hardware / requirements
 
@@ -93,7 +96,9 @@ error printed over serial.
 | `PB1`, `PB2` | yes | GPIO pins for the two time-out pushbuttons. |
 | `PB3` | yes | GPIO pin for the on-device menu Action button. |
 | `TEAMS` | yes | List mapping each sensor index to a team, e.g. `[1,1,2]`. Values must be `1` or `2`. |
-| `DEBUGMODE` | no | `0`/`1`. Verbose per-event logging and the `debug()` logger's minimum level (`DEBUG` vs `INFO`) when set. |
+| `DEBUGMODE` | no | `0`/`1`. Verbose per-event logging and the `debug()` logger's minimum level (`DEBUG` vs `INFO`) when set. Terminal-only - unaffected by `LOGLEVEL` below, and vice versa. |
+| `LOGLEVEL` | no | `"off"`/`"info"`/`"debug"`. Independent, file-backed logging to `log.txt` (see [logHelper.py](logHelper.py)) - `"off"` writes nothing, `"info"` logs significant events, `"debug"` also logs the same high-frequency per-event chatter `DEBUGMODE` gates on the terminal. Defaults to `"off"`. |
+| `LOG_MAX_KB` | no | Max size in KB before `log.txt` rotates to a single `log.txt.old` backup. Defaults to `100`. |
 | `SDA`, `SCL`, `I2C` | yes | I2C pins/bus id for the character LCD. |
 | `LEDSTRIP`, `NUMBER_PIXELS`, `STATE_MACHINE` | yes | NeoPixel data pin, pixel count, and PIO state machine. |
 | `TEAM1LEDS`, `TEAM2LEDS` | yes | Per-team pixel ranges, `"start-end;start-end"` (e.g. `"0-14"`). |
@@ -203,7 +208,11 @@ button, choose "Start Web Config" from the Settings menu (last item, before
    Pins, Game, Wi-Fi Networks, Display/LED Strip/Network Ports, SPI TFT
    (optional - clearing all seven fields disables the TFT, same as deleting
    those lines from `config.py` by hand), iRefFoos (including the API key,
-   written to `secretsIref.py`), and System. Saving a section validates every
+   written to `secretsIref.py`), and System (`DEBUGMODE`/`WDT_ENABLED` plus
+   `LOGLEVEL`/`LOG_MAX_KB` - saving this section also applies a `LOGLEVEL`/
+   `LOG_MAX_KB` change immediately, and "View Log"/"Clear Log" read or clear
+   `log.txt` right from the same page - see [logHelper.py](logHelper.py)).
+   Saving a section validates every
    field in it first - nothing is written if any of them fail - then backs up
    the previous `config.py` (as `config.py<millisecond timestamp>`) before
    overwriting it, and immediately reflects the change back into the running

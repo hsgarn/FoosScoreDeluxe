@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.16 09/20/2026
+#v3.17 09/20/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -44,6 +44,7 @@ import netmsg
 from netmsg import sendMessage,sendScore,sendTimeOut,sendConfigFile,FORMAT
 import configHelper
 from configHelper import readConfigFile,validateConfig,parseSave,CONFIGFILE
+import logHelper
 from ledstrip import LEDStrip
 from iref import IrefClient
 
@@ -559,6 +560,7 @@ def handleTeamScored(team,pin,foosOBSLines):
             survivors.append(client)
         else:
             print(f"Disconnected {client['addr']} (send failed)")
+            logHelper.log(f"Disconnected {client['addr']} (send failed)")
     clients = survivors
     iref.enqueue(team)
     if not isTestMode:
@@ -605,6 +607,7 @@ def handleTimeOut(team,pin,foosOBSLines,changeValueMode):
                 survivors.append(client)
             else:
                 print(f"Disconnected {client['addr']} (send failed)")
+                logHelper.log(f"Disconnected {client['addr']} (send failed)")
         clients = survivors
         if not isTestMode:
             stripTimeOut(teamNumber)
@@ -987,6 +990,11 @@ def core1Worker():
 # Main Program Starts Here
 #
 
+#Called once, unconditionally, before anything else here - including config.py validation
+#below - so even an "invalid config, aborting" boot failure can still be logged to file.
+#Matches FoosScorePlus's logHelper.configure() placement/rationale exactly.
+logHelper.configure(getattr(config,"LOGLEVEL","off"),getattr(config,"LOG_MAX_KB",100))
+
 #A configweb.flag left by the Settings menu's "Start Web Config" item means: skip the rest
 #of normal boot entirely and serve the full config-editing captive portal instead. Checked
 #before configHelper.validateConfig() below (unlike every other startup step) so a config.py
@@ -1022,6 +1030,7 @@ print("Validating configuration file...")
 configText = configHelper.linesToText(readConfigFile())
 if not validateConfig(configText):
     print("Invalid config file: " + CONFIGFILE + ".  Aborting.")
+    logHelper.log("Invalid config file: " + CONFIGFILE + ". Aborting.")
     sys.exit()
 
 port          = config.PORT
@@ -1103,6 +1112,7 @@ if IREF and not irefEnabled:
 
 if SENSOR1 + SENSOR2 + (SENSOR3 or 0) < 1:
     print("Not enough sensors configured in " + CONFIGFILE + ".  Aborting.")
+    logHelper.log("Not enough sensors configured in " + CONFIGFILE + ". Aborting.")
     sys.exit()
 
 #Every configured pin is cross-checked in one pass so no two of them collide - covers the full
@@ -1123,6 +1133,7 @@ pinCollision = False
 for pinName,pinNbr in pinAssignments.items():
     if pinNbr in seenPins:
         print("ERROR: " + pinName + " and " + seenPins[pinNbr] + " both use pin " + str(pinNbr) + " in " + CONFIGFILE + ".  Aborting.")
+        logHelper.log("ERROR: " + pinName + " and " + seenPins[pinNbr] + " both use pin " + str(pinNbr) + " in " + CONFIGFILE + ". Aborting.")
         pinCollision = True
     else:
         seenPins[pinNbr] = pinName
@@ -1445,6 +1456,7 @@ while keepRunning:
                     if clients:
                         udp.sendto(f"BUSY:{mac}".encode(),addr)
                         print("ASSIGN refused - game connection active.")
+                        logHelper.log("ASSIGN refused - game connection active.")
                     else:
                         table_nbr = int(parts[2])
                         iref.update_table(table_nbr)
@@ -1452,6 +1464,7 @@ while keepRunning:
                             file.write(str(table_nbr))
                         udp.sendto(f"ASSIGNED:{mac}:{table_nbr}".encode(),addr)
                         print(f"Table number {table_nbr} assigned and saved to {TABLEFILE}.")
+                        logHelper.log(f"Table number {table_nbr} assigned and saved to {TABLEFILE}.")
                         blinkTableNumber(table_nbr)
             elif msg[0:6] == "FLASH:":
                 parts = msg.split(":")
