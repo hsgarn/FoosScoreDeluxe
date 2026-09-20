@@ -111,6 +111,13 @@ def setConfigValues(lines,updates):
     #updates: {NAME: formatted_value_text} to replace/add, or {NAME: None} to remove that
     #line entirely (a cleared optional field falls back to whatever getattr(config,NAME,
     #default) main.py already uses). Returns a new list of lines - does not touch disk.
+    #Every line is guaranteed a trailing "\n" here, even if the file on disk didn't end
+    #with one (file.readlines() leaves the very last line bare in that case) - otherwise a
+    #brand-new field appended below would land writeConfigFile()'s plain file.write(line)
+    #straight onto the end of that previous line with no newline between them, producing a
+    #syntax error in config.py (confirmed on-device: this is exactly how LOG_MAX_KB ended
+    #up appended to the end of TFT_ROTATION's line and crashed the Pico at boot).
+    lines = [line if line.endswith("\n") else line + "\n" for line in lines]
     remaining = dict(updates)
     result = []
     for line in lines:

@@ -3,6 +3,16 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.18 09/20/2026
+- Fix config.py corruption (invalid syntax, crashed the Pico at boot) when the Config Web
+  portal saved a config field that didn't already exist as a line in config.py (e.g.
+  LOG_MAX_KB on a device whose config.py predated v3.17). configHelper.setConfigValues()
+  builds its line list from readConfigFile()'s file.readlines(), which leaves the file's
+  very last line without a trailing newline if the file on disk doesn't end with one;
+  appending a brand-new field's line straight after that (unmodified) last line then had
+  writeConfigFile() concatenate the two together with nothing between them. Every line is
+  now normalized to end with "\n" before any appending happens.
+
 ## v3.17 09/20/2026
 - Add file-backed logging (logHelper.py), ported from FoosScorePlus - `LOGLEVEL`
   (`"off"`/`"info"`/`"debug"`) and `LOG_MAX_KB` in config.py control what, if anything,
