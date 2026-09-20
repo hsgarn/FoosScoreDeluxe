@@ -4,8 +4,19 @@
 #project this does NOT run automatically on a failed connection - that stays
 #in standalone mode as before). Brings up an open access point, spoofs DNS so
 #any phone/laptop that joins it gets the "sign in to network" captive-portal
-#popup, and serves a one-field form that writes the chosen SSID/password into
-#secrets.py before rebooting into normal station mode.
+#popup, and serves a form that writes the chosen SSID/password (and an
+#optional admin password - see below) into secrets.py before rebooting into
+#normal station mode.
+#The AP/DNS/HTTP primitives and form helpers below are intentionally not
+#private (no leading underscore): configweb.py (the full config editor,
+#entered via the menu's "Start Config Web" item) reuses them rather than
+#duplicating socket/DNS/HTTP plumbing, the same relationship FoosScorePlus's
+#wifi_setup.py has with its configPortal.py.
+#The optional admin password set here (or left blank - it's not required to
+#connect to Wi-Fi) is what later gates access to that full config editor;
+#save_network() always rewrites both NETWORKS and ADMINPASSWORD together so a
+#plain Wi-Fi-only save here never silently drops a password set earlier from
+#within the config editor.
 #Takes already-constructed Pin objects for the two team LEDs (rather than pin
 #numbers) so a caller with other uses for those GPIOs can hand over Pin
 #instances it already owns instead of this module creating its own. An
@@ -42,7 +53,7 @@ SECRETSFILE = "secrets.py"
 LED_BLINK_MS = 500  #alternating team-LED interval while the portal waits for input
 
 
-def _dns_reply(data, ip_bytes):
+def dns_reply(data, ip_bytes):
     #Answers every question with ip_bytes, regardless of the name asked for -
     #that's what makes every domain the client tries resolve to this device.
     transaction_id = data[0:2]
@@ -57,7 +68,7 @@ def _dns_reply(data, ip_bytes):
     return header + question + answer
 
 
-def _urldecode(s):
+def urldecode(s):
     s = s.replace("+", " ")
     out = ""
     i = 0
@@ -74,33 +85,57 @@ def _urldecode(s):
     return out
 
 
-def _parse_form(body):
+def parse_form(body):
     fields = {}
     for pair in body.split("&"):
         if "=" in pair:
             k, v = pair.split("=", 1)
-            fields[_urldecode(k)] = _urldecode(v)
+            fields[urldecode(k)] = urldecode(v)
     return fields
 
 
-def _save_network(ssid, password, existing):
-    nets = [(s, p) for s, p in existing if s != ssid]
-    nets.append((ssid, password))
+def _write_secrets(networks, admin_password):
+    #Full-file rewrite of secrets.py, always including both NETWORKS and ADMINPASSWORD -
+    #shared by save_network/remove_network/save_admin_password below so a save from any of
+    #them never silently clobbers the other field.
     with open(SECRETSFILE, "w") as f:
         f.write("#WiFi networks to try, in order, until one connects.\n")
         f.write("NETWORKS = [\n")
-        for s, p in nets:
+        for s, p in networks:
             f.write("    (%r, %r),\n" % (s, p))
         f.write("]\n")
+        f.write("ADMINPASSWORD = %r\n" % admin_password)
 
 
-def _page(scanned_ssids, message=""):
+def save_network(ssid, password, existing, admin_password=""):
+    nets = [(s, p) for s, p in existing if s != ssid]
+    nets.append((ssid, password))
+    _write_secrets(nets, admin_password)
+
+
+def remove_network(ssid, existing, admin_password=""):
+    nets = [(s, p) for s, p in existing if s != ssid]
+    _write_secrets(nets, admin_password)
+
+
+def save_admin_password(existing_networks, admin_password):
+    #Changes only the admin password, leaving NETWORKS untouched - used by configweb.py's
+    #create-password/login-gate/change-password flows, which don't touch Wi-Fi credentials.
+    _write_secrets(existing_networks, admin_password)
+
+
+def _page(scanned_ssids, message="", existing_admin_password=""):
     options = "".join('<option value="%s">' % s for s in scanned_ssids)
+    admin_note = ("An admin password is already set." if existing_admin_password
+                   else "Protects the full config editor you can later reach from the on-device "
+                        "Settings menu's \"Start Config Web\" item. Leave blank to set one later.")
     return """<!DOCTYPE html><html><head><title>FoosScore Wi-Fi Setup</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>body{font-family:sans-serif;max-width:400px;margin:2em auto;padding:0 1em}
+label{display:block;margin-top:.6em}
 input{width:100%%;padding:.5em;margin:.3em 0 1em;box-sizing:border-box}
-button{width:100%%;padding:.7em;font-size:1em}</style></head><body>
+button{width:100%%;padding:.7em;font-size:1em}
+.note{font-size:.85em;color:#555;margin:-.8em 0 1em}</style></head><body>
 <h2>Connect FoosScore to Wi-Fi</h2>
 <p>%s</p>
 <form method="POST" action="/save">
@@ -109,8 +144,11 @@ button{width:100%%;padding:.7em;font-size:1em}</style></head><body>
 <datalist id="ssids">%s</datalist>
 <label>Password</label>
 <input type="password" name="password">
+<label>Admin password (optional)</label>
+<input type="password" name="admin_password" autocomplete="new-password">
+<p class="note">%s</p>
 <button type="submit">Save &amp; Connect</button>
-</form></body></html>""" % (message, options)
+</form></body></html>""" % (message, options, admin_note)
 
 
 def _success_page(ssid):
@@ -122,14 +160,14 @@ def _success_page(ssid):
 </body></html>""" % ssid
 
 
-def _http_response(body):
+def http_response(body):
     body_bytes = body.encode()
     header = ("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n"
               % len(body_bytes))
     return header.encode() + body_bytes
 
 
-def _handle_http(cl, scanned, existing):
+def _handle_http(cl, scanned, existing, existing_admin_password=""):
     cl.settimeout(3)
     request = b""
     try:
@@ -164,47 +202,40 @@ def _handle_http(cl, scanned, existing):
         except OSError:
             pass
 
-        fields = _parse_form(body.decode())
+        fields = parse_form(body.decode())
         ssid = fields.get("ssid", "").strip()
         password = fields.get("password", "")
+        admin_password = fields.get("admin_password", "").strip() or existing_admin_password
         if ssid:
-            _save_network(ssid, password, existing)
-            cl.send(_http_response(_success_page(ssid)))
+            save_network(ssid, password, existing, admin_password)
+            cl.send(http_response(_success_page(ssid)))
             cl.close()
             time.sleep(1)  #let the response reach the phone before the reset drops the AP
             machine.reset()
         else:
-            cl.send(_http_response(_page(scanned, "SSID is required - please try again.")))
+            cl.send(http_response(_page(scanned, "SSID is required - please try again.", existing_admin_password)))
         return
 
     #Any other path - including the captive-portal probe URLs phones request
     #on their own (/generate_204, /hotspot-detect.html, etc.) - gets the setup
     #form. Returning content other than what those probes expect is what
     #makes the OS pop up the captive-portal browser automatically.
-    cl.send(_http_response(_page(scanned)))
+    cl.send(http_response(_page(scanned, "", existing_admin_password)))
 
 
-def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, wdt=None, action_pressed=None):
-    print("No known Wi-Fi network reachable - starting setup access point.")
-
-    #No nearby-SSID scan here (the setup form's dropdown is just left empty - typing a name
-    #by hand still works fine): wlan_sta.scan() is an unbounded blocking call that can easily
-    #run past the RP2040 WDT's ~8.3s hard ceiling in an RF-dense area (many networks/BSSIDs
-    #to enumerate, e.g. a mesh system's multiple nodes), same as the startup connect sequence
-    #(see the wdt comment near the top of main.py) - the difference is the watchdog is already
-    #armed by the time this runs from the menu, and there's no way to feed it mid-call.
-    scanned = []
+def start_ap(wlan_sta, wdt=None):
+    #Brings up the open setup AP (SSID scheme, static IP, open security) - shared by
+    #run_captive_portal() below and configweb.py's full config editor so both portals bring
+    #up the AP identically instead of duplicating this. Feeds wdt between each step rather
+    #than just once: the STA->AP radio mode switch is itself slow enough on the cyw43 chip
+    #to eat a meaningful chunk of one WDT window on its own (see the wdt comment near the
+    #top of main.py).
     try:
         mac_suffix = "".join("%02x" % b for b in wlan_sta.config("mac"))[-6:]
     except OSError:
         mac_suffix = "000000"
     if wdt: wdt.feed()
     wlan_sta.active(False)
-
-    #The STA->AP radio mode switch below is itself slow enough on the cyw43 chip to eat a
-    #meaningful chunk of one WDT window on its own - feeding between each step (rather than
-    #once at the top and again only once the while loop starts) keeps any one step's own
-    #delay from stacking on top of the others' and adding up past the ~8.3s ceiling.
     if wdt: wdt.feed()
     ap = network.WLAN(network.AP_IF)
     ap.active(True)
@@ -216,11 +247,12 @@ def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, w
     except (ValueError, TypeError, OSError):
         ap.config(essid=ssid)
     if wdt: wdt.feed()
-    print('Setup AP "%s" is up - connect a phone to it, then browse to http://%s/ if a setup page does not open automatically.' % (ssid, AP_IP))
-    if on_ready:
-        on_ready(ssid, AP_IP)
-    if wdt: wdt.feed()
+    return ap, ssid
 
+
+def open_dns_http():
+    #Shared by run_captive_portal() and configweb.py - one UDP:53 DNS-spoofing socket, one
+    #TCP:80 HTTP socket, both non-blocking via the caller's own select() loop.
     dns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     dns.bind(("0.0.0.0", 53))
@@ -229,6 +261,26 @@ def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, w
     http.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     http.bind(("0.0.0.0", 80))
     http.listen(4)
+    return dns, http
+
+
+def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, wdt=None, action_pressed=None, existing_admin_password=""):
+    print("No known Wi-Fi network reachable - starting setup access point.")
+
+    #No nearby-SSID scan here (the setup form's dropdown is just left empty - typing a name
+    #by hand still works fine): wlan_sta.scan() is an unbounded blocking call that can easily
+    #run past the RP2040 WDT's ~8.3s hard ceiling in an RF-dense area (many networks/BSSIDs
+    #to enumerate, e.g. a mesh system's multiple nodes), same as the startup connect sequence
+    #(see the wdt comment near the top of main.py) - the difference is the watchdog is already
+    #armed by the time this runs from the menu, and there's no way to feed it mid-call.
+    scanned = []
+    ap, ssid = start_ap(wlan_sta, wdt)
+    print('Setup AP "%s" is up - connect a phone to it, then browse to http://%s/ if a setup page does not open automatically.' % (ssid, AP_IP))
+    if on_ready:
+        on_ready(ssid, AP_IP)
+    if wdt: wdt.feed()
+
+    dns, http = open_dns_http()
     if wdt: wdt.feed()
 
     ip_bytes = bytes(int(x) for x in AP_IP.split("."))
@@ -256,13 +308,13 @@ def run_captive_portal(wlan_sta, existing_networks, led1, led2, on_ready=None, w
             if r is dns:
                 try:
                     data, addr = dns.recvfrom(512)
-                    dns.sendto(_dns_reply(data, ip_bytes), addr)
+                    dns.sendto(dns_reply(data, ip_bytes), addr)
                 except OSError:
                     pass
             else:
                 cl, _addr = http.accept()
                 try:
-                    _handle_http(cl, scanned, existing_networks)
+                    _handle_http(cl, scanned, existing_networks, existing_admin_password)
                 except OSError:
                     pass
                 finally:

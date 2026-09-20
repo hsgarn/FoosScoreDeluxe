@@ -17,7 +17,7 @@
 #ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #OTHER DEALINGS IN THE SOFTWARE.
 #
-#v3.15 09/11/2026
+#v3.16 09/20/2026
 #See CHANGELOG.md for the full revision history.
 
 import network
@@ -41,7 +41,9 @@ from eventqueue import pushEvent,popEvent,takeDropped,EVENT_GOAL,EVENT_TIMEOUT,E
 import debuglog
 from debuglog import debug
 import netmsg
-from netmsg import sendMessage,sendScore,sendTimeOut,readConfigFile,sendConfigFile,validateConfig,parseSave,CONFIGFILE,FORMAT
+from netmsg import sendMessage,sendScore,sendTimeOut,sendConfigFile,FORMAT
+import configHelper
+from configHelper import readConfigFile,validateConfig,parseSave,CONFIGFILE
 from ledstrip import LEDStrip
 from iref import IrefClient
 
@@ -61,6 +63,7 @@ except ImportError:
           "\"Wi-Fi Setup\" item to create one.",level="WARNING")
     class secrets:
         NETWORKS = []
+        ADMINPASSWORD = ""
 
 try:
     import secretsIref
@@ -119,7 +122,7 @@ showMacLines = ["","",""]
 
 def getMenuItems():
     return [["Exit Menu","New Match","Adjust","Mode","Network","Settings","Diagnostics","End Program"],
-            [f"Points To Win  {pointsToWin}",f"Games To Win  {gamesToWin}",f"Balls In Rack  {ballsInRack}",f"RackTour Mode {rtMode}","Reset All","Exit Settings"],
+            [f"Points To Win  {pointsToWin}",f"Games To Win  {gamesToWin}",f"Balls In Rack  {ballsInRack}",f"RackTour Mode {rtMode}","Reset All","Start Web Config","Exit Settings"],
             [f"Team 1 Score  {teamScore[TEAM1]}",f"Team 2 Score  {teamScore[TEAM2]}",f"Team 1 Games  {teamGames[TEAM1]}",f"Team 2 Games  {teamGames[TEAM2]}",f"Team 1 TimeOuts  {teamTO[TEAM1]}",f"Team 2 TimeOuts  {teamTO[TEAM2]}","Exit Adjust"],
             ["Test","Solid","Time Out Team 1","Time Out Team 2","Score Team 1","Score Team 2","Fade","Rainbow Chase","Blink","Set Color","Clear","Exit Test LEDs"],
             ["Red","Green","Yellow","Blue","Orange","Indigo","Violet","Clear","Exit Set Color"],
@@ -723,6 +726,20 @@ def handleMenuAction(action,obs_lines):
         currentPageI2CLCD = -1
         foosOBSLines[:] = ['','','','System Reset']
         sendFoosOBSPlusScreen('FoosOBS+Mode Enabled',foosOBSLines)
+    elif action == "Start Web Config":
+        #Writes the flag main.py checks for at the very top of its next boot (before even
+        #validating config.py - see that check's comment) and reboots into it immediately.
+        #No menu-state cleanup needed beyond what's shown here, since nothing after this
+        #point in the current boot ever runs again.
+        debug("Start Web Config selected",level="INFO")
+        with open(CONFIGWEBFLAG,"w") as f:
+            f.write("1")
+        isMenuOn = False
+        currentPageI2CLCD = -1
+        i2cLCD1.clear()
+        sendFoosOBSPlusScreen("Starting Config Web...",foosOBSLines)
+        sleepFeedWdt(1)
+        machine.reset()
     elif action == "New Match":
         debug("New Match",level="INFO")
         isMenuOn = False
@@ -867,7 +884,8 @@ def handleMenuAction(action,obs_lines):
         i2cLCD1.clear()
         import wifi_setup
         wifi_setup.run_captive_portal(wlan,secrets.NETWORKS,team1LED,team2LED,on_ready=showWifiSetupScreen,wdt=wdt,
-                                       action_pressed=lambda: pushbuttons[ACTION_PB_IDX].value() == onPBState)
+                                       action_pressed=lambda: pushbuttons[ACTION_PB_IDX].value() == onPBState,
+                                       existing_admin_password=getattr(secrets,"ADMINPASSWORD",""))
         debug("Wi-Fi Setup cancelled",level="INFO")
         forceStandAloneMode = True
         menuLevel = NETWORK_LEVEL
@@ -968,6 +986,29 @@ def core1Worker():
 #
 # Main Program Starts Here
 #
+
+#A configweb.flag left by the Settings menu's "Start Web Config" item means: skip the rest
+#of normal boot entirely and serve the full config-editing captive portal instead. Checked
+#before configHelper.validateConfig() below (unlike every other startup step) so a config.py
+#broken badly enough to fail that check can still be reached and fixed from here. Plain
+#try/except OSError, same pattern as the table.txt read further down.
+CONFIGWEBFLAG = "configweb.flag"
+enteringConfigWeb = False
+try:
+    with open(CONFIGWEBFLAG,"r"):
+        enteringConfigWeb = True
+except OSError:
+    pass
+
+if enteringConfigWeb:
+    import os
+    os.remove(CONFIGWEBFLAG)
+    debug("configweb.flag present - entering Config Web portal instead of normal boot.",level="INFO")
+    configWlan = network.WLAN(network.STA_IF)
+    import configweb
+    configweb.run(configWlan,Pin(getattr(config,"LED1",26),Pin.OUT),Pin(getattr(config,"LED2",27),Pin.OUT))
+    #configweb.run() never returns - it only exits via machine.reset()
+
 resetAll()
 menuPtr = 0
 menuLevel = 0
@@ -978,7 +1019,7 @@ cursorLineI2CLCD = 0
 foosOBSLines = ['','','','']
 
 print("Validating configuration file...")
-configText = "\r\n".join(line.rstrip("\r\n") for line in readConfigFile()) + "\r\n"
+configText = configHelper.linesToText(readConfigFile())
 if not validateConfig(configText):
     print("Invalid config file: " + CONFIGFILE + ".  Aborting.")
     sys.exit()

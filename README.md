@@ -37,19 +37,22 @@ different from a plain FoosScorePlus board.
 | [colors.py](colors.py) | RGB color constants used by the LED strip and menu. |
 | [eventqueue.py](eventqueue.py) | The IRQ-safe sensor/pushbutton event ring buffer. |
 | [debuglog.py](debuglog.py) | The leveled console logger (`debug()`). |
-| [netmsg.py](netmsg.py) | TCP message sending (`sendMessage`/`sendScore`/`sendTimeOut`) and config-file transfer/validation (`read`/`save` commands). |
+| [netmsg.py](netmsg.py) | TCP message sending (`sendMessage`/`sendScore`/`sendTimeOut`/`sendConfigFile`). |
+| [configHelper.py](configHelper.py) | Config-file read/validate/write logic (`readConfigFile`/`validateConfig`/`setConfigValues`/`parseSave`/...), shared by `main.py`'s boot-time validation, the TCP `save` command, and the Config Web portal. |
 | [ledstrip.py](ledstrip.py) | The `LEDStrip` class - NeoPixel command queue and animation patterns. |
 | [iref.py](iref.py) | The `IrefClient` class - iRefFoos Remote Command API HTTP client and its report queue. |
 | [config.py](config.py) | Per-table hardware/network configuration (pins, ports, delays, table number, display/LED-strip pins, iRefFoos settings). |
 | [wifi_setup.py](wifi_setup.py) | Wi-Fi setup captive portal, entered from the on-device menu's "Wi-Fi Setup" item (see [Wi-Fi setup portal](#wi-fi-setup-portal)). Ported from FoosScorePlus. |
-| [secrets.py](secrets.py) | WiFi SSID/password list (`NETWORKS`), tried in order until one connects. Can also be written by the Wi-Fi setup portal instead of over USB. |
-| [secretsIref.py](secretsIref.py) | iRefFoos API key. Optional - only needed if `IREF = 1` in `config.py`. |
+| [configweb.py](configweb.py) | Full config-editing captive portal, entered by rebooting with `configweb.flag` present - the Settings menu's "Start Web Config" item does this (see [Config Web portal](#config-web-portal)). Ported from FoosScorePlus. |
+| [secrets.py](secrets.py) | WiFi SSID/password list (`NETWORKS`) and the optional admin password (`ADMINPASSWORD`) that gates the Config Web portal. Written by both captive portals instead of over USB. |
+| [secretsIref.py](secretsIref.py) | iRefFoos API key. Optional - only needed if `IREF = 1` in `config.py`. Can also be written by the Config Web portal. |
 | `table.txt` | Written/read at runtime by `main.py`. Holds a remotely assigned table number that overrides `config.TABLE`. Not checked into the repo. |
+| `configweb.flag` | Written by the Settings menu's "Start Web Config" item, read (and removed) at the very top of `main.py`'s next boot to enter the Config Web portal instead of booting normally. Not checked into the repo. |
 
 `main.py` imports `colors.py`/`eventqueue.py`/`debuglog.py`/`netmsg.py`/
-`ledstrip.py`/`iref.py` by name at startup, so all six must be copied to the
-board's filesystem alongside `main.py` and `config.py` - a missing one fails
-as an `ImportError`, not a syntax or memory error.
+`configHelper.py`/`ledstrip.py`/`iref.py` by name at startup, so all seven
+must be copied to the board's filesystem alongside `main.py` and `config.py`
+- a missing one fails as an `ImportError`, not a syntax or memory error.
 
 ## Hardware / requirements
 
@@ -155,13 +158,16 @@ and reached from the main menu's "Wi-Fi Setup" item:
 2. The AP's name and setup address are also shown on the I2C LCD - unlike the
    base project, this board has a display, so there's no need to memorize a
    fixed IP ahead of time.
-3. Opening that prompt (or browsing to the address shown) shows a one-field
-   setup page - type in the network name and password (no nearby-network
-   scan/dropdown, since that's an unbounded call that risks tripping the
-   watchdog in an RF-dense area; see the comment in `wifi_setup.py`).
-4. Submitting a network name and password writes it into `secrets.py` (added
-   to, not replacing, any networks already listed there) and reboots the
-   board.
+3. Opening that prompt (or browsing to the address shown) shows a setup page
+   - type in the network name and password (no nearby-network scan/dropdown,
+   since that's an unbounded call that risks tripping the watchdog in an
+   RF-dense area; see the comment in `wifi_setup.py`), plus an optional admin
+   password field. That password isn't required to connect to Wi-Fi - it only
+   gates the Config Web portal below, and can be left blank here and set
+   later from within that portal instead.
+4. Submitting the form writes the network (added to, not replacing, any
+   networks already listed there) and the admin password (if set) into
+   `secrets.py`, then reboots the board.
 5. On reboot the normal connect sequence runs again with the new
    credentials. If they're wrong, standalone mode kicks in as usual - "Wi-Fi
    Setup" from the menu tries again.
@@ -170,6 +176,42 @@ The two team LEDs (`team1LED`/`team2LED`) alternate every half second while
 the portal is waiting for a submission, on the same GPIOs already wired for
 them - the LED strip isn't used for this since it's driven from `core1Worker`,
 which the portal's blocking wait doesn't service.
+
+## Config Web portal
+
+The full config editor - can change any setting in `config.py` (plus the
+Wi-Fi network list, the admin password, and the iRefFoos API key), not just
+the network. Ported from FoosScorePlus's `configPortal.py`/`configHelper.py`,
+built on [wifi_setup.py](wifi_setup.py)'s AP/DNS/HTTP helpers, and reached
+differently than in FoosScorePlus: instead of holding a dedicated GPIO reset
+button, choose "Start Web Config" from the Settings menu (last item, before
+"Exit Settings").
+
+1. That menu item writes a `configweb.flag` marker file and reboots
+   immediately.
+2. At the very top of the next boot - before even validating `config.py` -
+   `main.py` checks for that flag. If present, it's removed and
+   [configweb.py](configweb.py)'s portal runs instead of a normal boot, so a
+   `config.py` broken badly enough to fail validation can still be reached
+   and fixed here.
+3. The portal brings up the same kind of open setup AP/captive-portal prompt
+   as Wi-Fi Setup above. If no admin password is set yet, the first thing it
+   asks for is one (4+ characters); otherwise it asks you to log in. Every
+   later request from that phone/laptop's IP is then treated as
+   authenticated for the rest of the session.
+4. The menu (once logged in) links to one form per settings section - GPIO/
+   Pins, Game, Wi-Fi Networks, Display/LED Strip/Network Ports, SPI TFT
+   (optional - clearing all seven fields disables the TFT, same as deleting
+   those lines from `config.py` by hand), iRefFoos (including the API key,
+   written to `secretsIref.py`), and System. Saving a section validates every
+   field in it first - nothing is written if any of them fail - then backs up
+   the previous `config.py` (as `config.py<millisecond timestamp>`) before
+   overwriting it, and immediately reflects the change back into the running
+   session so re-opening the same form shows the new value without a reboot.
+5. "Finish & Restart Table" (on the menu page) reboots into a normal boot
+   with the new configuration. An idle portal (no request for 5 minutes)
+   reboots on its own the same way, so a forgotten/abandoned session doesn't
+   block the table indefinitely.
 
 ## Main loop
 

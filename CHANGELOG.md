@@ -3,6 +3,15 @@
 All notable changes to FoosScorePlusDeluxe are documented here. main.py's header
 comment keeps only the current version; this file has the full history.
 
+## v3.16 09/20/2026
+- Add Config Web portal (configweb.py), ported from FoosScorePlus - a full config.py
+  editor reached via the Settings menu's new "Start Web Config" item (writes a
+  configweb.flag and reboots into it, instead of a dedicated GPIO reset button), gated
+  by an optional admin password now also settable from the Wi-Fi Setup portal.
+- Split config-file read/validate/write logic out of netmsg.py into configHelper.py,
+  matching FoosScorePlus's file of the same name. Fixed a crash in validateConfig() on
+  config.py's comment lines in the process.
+
 ## v3.15 09/11/2026
 - Rearranged Menus
 
